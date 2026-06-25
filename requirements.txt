@@ -1,0 +1,7 @@
+# Зависимости парсера разведки рынка (Направление 3)
+# Ставятся на VPS: pip install -r requirements.txt
+telethon==1.36.0        # чтение Telegram через аккаунт (протокол MTProto)
+gspread==6.1.2          # запись в Google-таблицу
+google-auth==2.33.0     # доступ к Google по сервисному ключу
+anthropic==0.39.0       # ИИ-категории (тот же Claude, что и на сайте)
+python-dotenv==1.0.1    # чтение настроек из файла .env
