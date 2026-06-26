@@ -26,7 +26,7 @@ from telethon.tl.types import User
 
 import state
 from channels import CHANNELS
-from classify import classify
+from classify import classify, is_ad_candidate
 
 load_dotenv()
 
@@ -90,11 +90,16 @@ async def process_channel(client, sheet: Sheet, ch: dict, joins_left: list):
     max_id = last_id
     added = 0
     seen = 0
+    skipped = 0
     try:
         async for msg in client.iter_messages(entity, **kwargs):
             max_id = max(max_id, msg.id)
             text = msg.message  # только текст; личные данные не трогаем
             if not text:
+                continue
+            # Умный предфильтр: короткую болтовню пропускаем мгновенно (без ИИ, без паузы)
+            if not is_ad_candidate(text):
+                skipped += 1
                 continue
             seen += 1
             if MAX_POSTS_PER_CHANNEL and seen > MAX_POSTS_PER_CHANNEL:
@@ -119,7 +124,8 @@ async def process_channel(client, sheet: Sheet, ch: dict, joins_left: list):
 
     if max_id > last_id:
         state.set_last_id(username, max_id)
-    print(f"  ✅ добавлено объявлений: {added}; докуда дочитал: {max_id}")
+    print(f"  ✅ объявлений добавлено: {added}; проверено ИИ: {seen}; "
+          f"пропущено болтовни: {skipped}; докуда дочитал: {max_id}")
 
 
 class DryRunSink:
