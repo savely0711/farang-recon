@@ -11,11 +11,23 @@ import json
 import os
 import re
 
+from dotenv import load_dotenv
+
+# Грузим .env здесь, чтобы ключ был доступен независимо от порядка импортов.
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+
 from anthropic import Anthropic
 from categories import ALL_CATEGORIES, CATEGORY_LIST_FOR_PROMPT
 
-_client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 _MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
+_client = None
+
+
+def _get_client() -> Anthropic:
+    global _client
+    if _client is None:
+        _client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    return _client
 
 _SYSTEM = (
     "Ты разбираешь сообщения из русскоязычных барахолок Паттайи (Таиланд). "
@@ -53,7 +65,7 @@ def classify(text: str) -> dict:
         return {"is_listing": False, "category": "other", "price_thb": None}
 
     try:
-        resp = _client.messages.create(
+        resp = _get_client().messages.create(
             model=_MODEL,
             max_tokens=200,
             system=_SYSTEM,
