@@ -7,12 +7,14 @@
 Дальше парсер входит автоматически, код больше не понадобится.
 
 API_ID / API_HASH должны быть уже в .env (их кладёт configure.sh).
+Совместимо с Python 3.14 (используется asyncio.run, без telethon.sync).
 """
+import asyncio
 import os
 import re
 
 from dotenv import load_dotenv
-from telethon.sync import TelegramClient
+from telethon import TelegramClient
 from telethon.sessions import StringSession
 
 ENV_PATH = os.path.join(os.path.dirname(__file__), ".env")
@@ -33,9 +35,17 @@ def save_session_to_env(session_str: str) -> None:
         f.write(text)
 
 
-print("Входим в Telegram техническим аккаунтом…")
-with TelegramClient(StringSession(), api_id, api_hash) as client:
-    me = client.get_me()
+async def main():
+    print("Входим в Telegram техническим аккаунтом…")
+    client = TelegramClient(StringSession(), api_id, api_hash)
+    # start() сам спросит телефон, код и (если есть) облачный пароль через input()
+    await client.start()
+    me = await client.get_me()
     save_session_to_env(client.session.save())
     print(f"\n✅ Вход выполнен: {me.first_name} (id {me.id})")
     print("Строка сессии сохранена в .env. Код больше не понадобится.")
+    await client.disconnect()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
