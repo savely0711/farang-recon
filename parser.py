@@ -34,7 +34,11 @@ load_dotenv()
 FIRST_RUN_DAYS = 7          # первый заход: посты за последнюю неделю
 DELAY_BETWEEN_POSTS = 1.5   # сек между постами (медленно, по-человечески)
 DELAY_BETWEEN_CHANNELS = 8  # сек между каналами
-MAX_NEW_JOINS_PER_RUN = 1   # не больше одного нового вступления за запуск
+# Авто-вступление в группы ВЫКЛЮЧЕНО (0): в группы вступает сам Савелий руками
+# из приложения (проходит капчу как человек, выглядит естественно). Парсер только
+# читает те группы, где аккаунт уже состоит; в остальные не лезет. Можно временно
+# включить через переменную MAX_JOINS, но по умолчанию — 0 (безопасно).
+MAX_NEW_JOINS_PER_RUN = int(os.environ.get("MAX_JOINS", "0"))
 # Ограничение постов на канал за запуск (0 = без лимита). Для первого теста
 # удобно поставить, например, MAX_POSTS=20 — чтобы быстро проверить и не жечь ИИ.
 MAX_POSTS_PER_CHANNEL = int(os.environ.get("MAX_POSTS", "0"))
@@ -63,7 +67,7 @@ async def process_channel(client, sheet: Sheet, ch: dict, joins_left: list):
 
     if not await ensure_member(client, entity):
         if joins_left[0] <= 0:
-            print("  ⏭ не участник, лимит вступлений на сегодня исчерпан — пропускаю")
+            print("  ⏭ аккаунт не состоит в группе — пропускаю (вступи руками из приложения)")
             return
         try:
             await client(JoinChannelRequest(entity))
