@@ -55,7 +55,7 @@ async def ensure_member(client, entity) -> bool:
         return False
 
 
-async def process_channel(client, sheet: Sheet, ch: dict, joins_left: list):
+async def process_channel(client, sheet, ch: dict, joins_left: list):
     username = ch["username"]
     print(f"\n📂 Канал @{username} ({ch['title']})")
 
@@ -144,7 +144,9 @@ class DryRunSink:
 
 
 def _make_sink():
-    dry = os.environ.get("DRY_RUN") == "1" or not os.environ.get("GOOGLE_CREDENTIALS_FILE")
+    # В таблицу пишем, только если задан адрес скрипта-приёмника (SHEET_WEBHOOK_URL).
+    # Нет адреса или явно DRY_RUN=1 → тестовый режим (только показываем на экране).
+    dry = os.environ.get("DRY_RUN") == "1" or not os.environ.get("SHEET_WEBHOOK_URL")
     if dry:
         return DryRunSink()
     from sheets import Sheet

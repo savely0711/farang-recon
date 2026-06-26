@@ -1,0 +1,7 @@
+# Секреты и состояние — НИКОГДА не коммитим
+.env
+service_account.json
+state.json
+*.session
+__pycache__/
+*.pyc
