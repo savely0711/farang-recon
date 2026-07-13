@@ -18,7 +18,8 @@
  *   6. URL веб-приложения (…/exec) → это SHEET_WEBHOOK_URL в .env.
  */
 var TOKEN = 'PASTE_YOUR_TOKEN_HERE'; // тот же, что в .env (SHEET_TOKEN)
-var HEADER = ['Дата', 'Категория', 'Цена (฿)', 'Ссылка', 'Краткое описание'];
+var HEADER = ['Дата', 'Категория', 'Цена (฿)', 'Ссылка', 'Автор (ник)', 'Краткое описание'];
+var AUTHOR_COL = 5; // позиция колонки «Автор (ник)» (после «Ссылки»)
 
 function doPost(e) {
   try {
@@ -32,6 +33,8 @@ function doPost(e) {
     if (!sh) {
       sh = ss.insertSheet(tab);
       sh.appendRow(HEADER);
+    } else {
+      _ensureAuthorColumn(sh); // старые вкладки (5 колонок) — добавить «Автор (ник)»
     }
 
     // Пачка строк (новый формат) или одна строка (старый) — приводим к массиву.
@@ -39,13 +42,13 @@ function doPost(e) {
     if (!rows) {
       rows = [{
         date: body.date, category: body.category, price: body.price,
-        link: body.link, snippet: body.snippet
+        link: body.link, author: body.author, snippet: body.snippet
       }];
     }
 
     if (rows.length > 0) {
       var values = rows.map(function (r) {
-        return [r.date || '', r.category || '', r.price || '', r.link || '', r.snippet || ''];
+        return [r.date || '', r.category || '', r.price || '', r.link || '', r.author || '', r.snippet || ''];
       });
       // Один блочный setValues — быстро и без упора в лимиты (не по строке).
       var startRow = sh.getLastRow() + 1;
@@ -55,6 +58,23 @@ function doPost(e) {
   } catch (err) {
     return _json({ ok: false, error: String(err) });
   }
+}
+
+/**
+ * Достраивает колонку «Автор (ник)» в СТАРЫХ вкладках (сделанных до 13.07,
+ * когда было 5 колонок). Вставляет пустую колонку на позицию 5 — старые строки
+ * при этом остаются выровненными (описание аккуратно сдвигается в 6-ю колонку),
+ * и переписывает шапку. Если колонка уже есть — ничего не делает.
+ */
+function _ensureAuthorColumn(sh) {
+  var lastCol = sh.getLastColumn();
+  if (lastCol === 0) { sh.appendRow(HEADER); return; }
+  var hdr = sh.getRange(1, 1, 1, lastCol).getValues()[0];
+  if (hdr.indexOf('Автор (ник)') !== -1) return; // уже мигрировали
+  if (lastCol >= AUTHOR_COL) {
+    sh.insertColumnBefore(AUTHOR_COL); // сдвигаем «Краткое описание» вправо
+  }
+  sh.getRange(1, 1, 1, HEADER.length).setValues([HEADER]);
 }
 
 // Удобно для проверки в браузере: открыть /exec — ответит, что живой.

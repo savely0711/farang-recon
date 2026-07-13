@@ -2,6 +2,7 @@
 .env
 service_account.json
 state.json
+dedup.json
 *.session
 __pycache__/
 *.pyc

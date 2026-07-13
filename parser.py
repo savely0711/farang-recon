@@ -6,6 +6,9 @@
   - по каждому каналу из channels.py читает НОВЫЕ посты
     (первый заход — за последнюю неделю, дальше — что появилось со вчера);
   - каждый пост разбирает ИИ: объявление ли это, категория, цена;
+  - у объявления берёт НИК автора поста (без прочих данных — правило 3);
+  - ПРОПУСКАЕТ дубли (тот же автор + похожий текст) — в таблицу не пишет
+    повторы и даже не тратит на них ИИ (см. dedup.py);
   - объявления пишет в Google-таблицу ПАЧКАМИ (своя вкладка на канал);
   - запоминает, докуда дочитал (state.json), чтобы не дублировать.
 
@@ -28,6 +31,7 @@ from telethon.sessions import StringSession
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.types import User
 
+import dedup
 import state
 from channels import CHANNELS
 from classify import classify, is_ad_candidate
@@ -63,7 +67,17 @@ async def ensure_member(client, entity) -> bool:
         return False
 
 
-async def process_channel(client, sheet, ch: dict, joins_left: list):
+async def _author_username(msg) -> str | None:
+    """Ник автора поста (без @) или None, если открытого ника нет.
+    Больше НИКАКИХ данных о пользователе не берём (правило Направления 3)."""
+    try:
+        sender = await msg.get_sender()
+        return getattr(sender, "username", None) or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+async def process_channel(client, sheet, ch: dict, joins_left: list, persist: bool):
     username = ch["username"]
     print(f"\n📂 Канал @{username} ({ch['title']})")
 
@@ -100,11 +114,14 @@ async def process_channel(client, sheet, ch: dict, joins_left: list):
     added = 0
     seen = 0
     skipped = 0
+    duped = 0                 # сколько повторов отсеяли (не тратя ИИ и таблицу)
     write_failed = False
-    buffer = []  # копим объявления: список (msg_id, «сырое» объявление)
+    buffer = []               # копим объявления: список (msg_id, «сырое» объявление)
+    pending = set()           # ключи дублей этого прогона (ещё не записанных на диск)
 
     def flush() -> bool:
-        """Отправляет накопленную пачку. При успехе двигает written_id и чистит буфер."""
+        """Отправляет накопленную пачку. При успехе двигает written_id, помечает
+        объявления как записанные (dedup) и чистит буфер."""
         nonlocal written_id, added
         if not buffer:
             return True
@@ -112,6 +129,12 @@ async def process_channel(client, sheet, ch: dict, joins_left: list):
         if ok:
             written_id = max(written_id, max(mid for mid, _ in buffer))
             added += len(buffer)
+            if persist:
+                # Запоминаем ТОЛЬКО реально записанные объявления (по полному
+                # тексту), чтобы будущие перепосты не попадали в таблицу.
+                for _, item in buffer:
+                    dedup.remember(item.get("author"), item["snippet"])
+                dedup.save()
             buffer.clear()
         return ok
 
@@ -125,17 +148,26 @@ async def process_channel(client, sheet, ch: dict, joins_left: list):
             if not is_ad_candidate(text):
                 skipped += 1
                 continue
+            # Ник автора нужен и для таблицы, и для проверки дубля (тот же автор + текст).
+            author = await _author_username(msg)
+            # Дубль? Отсеиваем ДО ИИ — не тратим ни ИИ, ни строку в таблице.
+            key = dedup.make_key(author, text)
+            if dedup.is_dup(author, text) or key in pending:
+                duped += 1
+                continue
             seen += 1
             if MAX_POSTS_PER_CHANNEL and seen > MAX_POSTS_PER_CHANNEL:
                 print(f"  ⏹ достигнут лимит {MAX_POSTS_PER_CHANNEL} постов на канал — стоп")
                 break
             result = classify(text)
             if result["is_listing"]:
+                pending.add(key)  # чтобы повтор в этом же прогоне не прошёл дважды
                 buffer.append((msg.id, {
                     "date": msg.date,
                     "category": result["category"],
                     "price": result["price_thb"],
                     "link": f"https://t.me/{username}/{msg.id}",
+                    "author": author,
                     "snippet": text,
                 }))
                 # Дошли до потолка пачки — отправляем сразу.
@@ -159,7 +191,8 @@ async def process_channel(client, sheet, ch: dict, joins_left: list):
 
     tail = " (запись прервалась — докуда успели; остальное в след. раз)" if write_failed else ""
     print(f"  ✅ объявлений записано: {added}; проверено ИИ: {seen}; "
-          f"пропущено болтовни: {skipped}; докуда дочитал: {final_id}{tail}")
+          f"повторов отсеяно: {duped}; пропущено болтовни: {skipped}; "
+          f"докуда дочитал: {final_id}{tail}")
 
 
 class DryRunSink:
@@ -175,8 +208,11 @@ class DryRunSink:
             cat = ALL_CATEGORIES.get(l["category"], l["category"])
             price = l["price"]
             price_str = "—" if price is None else ("даром" if price == 0 else f"{price}฿")
+            author = l.get("author")
+            author_str = f"@{author}" if author else "—"
             snip = (l["snippet"] or "").replace("\n", " ").strip()[:70]
-            print(f"    [{tab}] {l['date']:%Y-%m-%d} | {cat} | {price_str} | {l['link']}\n        «{snip}»")
+            print(f"    [{tab}] {l['date']:%Y-%m-%d} | {cat} | {price_str} | "
+                  f"автор {author_str} | {l['link']}\n        «{snip}»")
         return True
 
 
@@ -196,6 +232,10 @@ async def main():
     session = StringSession(os.environ["TG_SESSION"])
 
     sheet = _make_sink()
+    # Дубли запоминаем на диск только при реальной записи в таблицу
+    # (в тестовом прогоне файл dedup.json не трогаем, чтобы не «засорять» память).
+    persist = not isinstance(sheet, DryRunSink)
+    dedup.load()
     joins_left = [MAX_NEW_JOINS_PER_RUN]
 
     async with TelegramClient(session, api_id, api_hash) as client:
@@ -207,7 +247,7 @@ async def main():
             # Защитная сеть: непредвиденный сбой на одном канале не должен
             # ронять весь прогон — сообщаем и идём к следующему.
             try:
-                await process_channel(client, sheet, ch, joins_left)
+                await process_channel(client, sheet, ch, joins_left, persist)
             except Exception as e:  # noqa: BLE001
                 print(f"  ⚠ канал @{ch['username']} прервался: {e} — иду дальше")
             if i < len(CHANNELS) - 1:
