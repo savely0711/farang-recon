@@ -32,6 +32,7 @@ from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.types import User
 
 import dedup
+import outreach_queue
 import state
 from channels import CHANNELS
 from classify import classify, is_ad_candidate
@@ -135,6 +136,11 @@ async def process_channel(client, sheet, ch: dict, joins_left: list, persist: bo
                 for _, item in buffer:
                     dedup.remember(item.get("author"), item["snippet"])
                 dedup.save()
+                # Пункт 14: новые объявления с ником автора — в очередь
+                # «первого касания» (её разбирает outreach.py).
+                for _, item in buffer:
+                    outreach_queue.enqueue(
+                        item.get("author"), item["link"], item.get("date"))
             buffer.clear()
         return ok
 

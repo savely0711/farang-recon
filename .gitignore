@@ -6,3 +6,9 @@ dedup.json
 *.session
 __pycache__/
 *.pyc
+
+# Состояние «первого касания» (пункт 14) — локальные файлы сервера
+outreach_queue.jsonl
+contacted.json
+outreach_state.json
+outreach.log
