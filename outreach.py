@@ -29,6 +29,7 @@ import asyncio
 import json
 import os
 import random
+import sys
 from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
@@ -286,11 +287,12 @@ def dry_preview():
 
 
 def main():
-    if not ENABLED and not DRY:
+    dry = DRY or (len(sys.argv) > 1 and sys.argv[1].lower() == "dry")
+    if not ENABLED and not dry:
         print("Отправка ВЫКЛЮЧЕНА. Включить: OUTREACH_ENABLED=1 в .env "
-              "(или разовый тест: OUTREACH_DRY=1 python3 outreach.py).")
+              "(или разовый тест: python3 outreach.py dry).")
         return
-    if DRY:
+    if dry:
         dry_preview()
         return
     if not within_hours():
