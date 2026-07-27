@@ -51,6 +51,16 @@ def ask_phone() -> str:
     return p
 
 
+import getpass
+
+
+def ask_password() -> str:
+    p = getpass.getpass("Облачный пароль 2FA (или просто Enter — пропустить этот аккаунт): ")
+    if not p.strip():
+        raise KeyboardInterrupt("отменено: пустой пароль")
+    return p
+
+
 async def main():
     slot = next_free_slot()
     if slot is None:
@@ -59,7 +69,7 @@ async def main():
         return
     print(f"Вход отправляющего аккаунта в слот TG_SEND_SESSION_{slot}…")
     client = TelegramClient(StringSession(), api_id, api_hash)
-    await client.start(phone=ask_phone)  # код и пароль спросит сам через input()
+    await client.start(phone=ask_phone, password=ask_password)  # код и пароль спросит сам через input()
     me = await client.get_me()
     save_session(slot, client.session.save())
     who = getattr(me, "username", None) or me.first_name
@@ -69,4 +79,7 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, EOFError):
+        print("\n⏭ Аккаунт пропущен. Запусти 'python3 loginsend.py' снова для другого номера.")
