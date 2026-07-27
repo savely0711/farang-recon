@@ -47,6 +47,12 @@ def _key(author: str | None, text: str) -> str:
     return hashlib.sha1(f"{a}|{_norm(text)}".encode("utf-8")).hexdigest()
 
 
+def make_key(author, text):
+    """Публичный ключ дубля (тот же, что внутри is_dup) — для отсева повторов
+    в пределах одного прогона (используется в parser.py)."""
+    return _key(author, text)
+
+
 def load() -> None:
     """Читает ранее записанные ключи в память (один раз за прогон)."""
     global _keys
