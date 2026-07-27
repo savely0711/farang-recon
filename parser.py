@@ -126,15 +126,15 @@ async def process_channel(client, sheet, ch: dict, joins_left: list, persist: bo
         nonlocal written_id, added
         if not buffer:
             return True
-        ok = sheet.flush(ch["tab"], [item for _, item in buffer])
+        ok = sheet.flush([item for _, item in buffer])
         if ok:
             written_id = max(written_id, max(mid for mid, _ in buffer))
             added += len(buffer)
             if persist:
-                # Запоминаем ТОЛЬКО реально записанные объявления (по полному
-                # тексту), чтобы будущие перепосты не попадали в таблицу.
+                # Запоминаем ТОЛЬКО реально записанных авторов (по нику),
+                # чтобы будущие посты того же человека не заводили вторую строку.
                 for _, item in buffer:
-                    dedup.remember(item.get("author"), item["snippet"])
+                    dedup.remember(item.get("author"))
                 dedup.save()
                 # Пункт 14: новые объявления с ником автора — в очередь
                 # «первого касания» (её разбирает outreach.py).
@@ -154,11 +154,16 @@ async def process_channel(client, sheet, ch: dict, joins_left: list, persist: bo
             if not is_ad_candidate(text):
                 skipped += 1
                 continue
-            # Ник автора нужен и для таблицы, и для проверки дубля (тот же автор + текст).
+            # Ник автора нужен и для таблицы, и для дедупа по нику.
             author = await _author_username(msg)
-            # Дубль? Отсеиваем ДО ИИ — не тратим ни ИИ, ни строку в таблице.
-            key = dedup.make_key(author, text)
-            if dedup.is_dup(author, text) or key in pending:
+            # Пункт 3: постам без открытого ника писать некому — пропускаем ДО ИИ.
+            if not author:
+                skipped += 1
+                continue
+            # Дубль по НИКУ? Один ник = одна строка навсегда. Отсеиваем ДО ИИ —
+            # не тратим ни ИИ, ни строку в таблице (см. dedup.py).
+            key = dedup.make_key(author)
+            if dedup.is_dup(author) or key in pending:
                 duped += 1
                 continue
             seen += 1
@@ -171,9 +176,9 @@ async def process_channel(client, sheet, ch: dict, joins_left: list, persist: bo
                 buffer.append((msg.id, {
                     "date": msg.date,
                     "category": result["category"],
-                    "price": result["price_thb"],
                     "link": f"https://t.me/{username}/{msg.id}",
                     "author": author,
+                    "channel": ch["title"],
                     "snippet": text,
                 }))
                 # Дошли до потолка пачки — отправляем сразу.
@@ -208,16 +213,15 @@ class DryRunSink:
     def __init__(self):
         print("🧪 ТЕСТОВЫЙ РЕЖИМ (DRY_RUN): в Google-таблицу НЕ пишу, только показываю.")
 
-    def flush(self, tab, listings):
+    def flush(self, listings):
         from categories import ALL_CATEGORIES
         for l in listings:
             cat = ALL_CATEGORIES.get(l["category"], l["category"])
-            price = l["price"]
-            price_str = "—" if price is None else ("даром" if price == 0 else f"{price}฿")
             author = l.get("author")
             author_str = f"@{author}" if author else "—"
+            chan = l.get("channel") or "—"
             snip = (l["snippet"] or "").replace("\n", " ").strip()[:70]
-            print(f"    [{tab}] {l['date']:%Y-%m-%d} | {cat} | {price_str} | "
+            print(f"    [CRM] {l['date']:%Y-%m-%d} | {chan} | {cat} | "
                   f"автор {author_str} | {l['link']}\n        «{snip}»")
         return True
 

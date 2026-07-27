@@ -141,14 +141,16 @@ def _sessions() -> dict:
 
 
 # ─────────────────────── отбор кандидатов ───────────────────────
-def pick_candidates(contacted: dict, need: int) -> list:
-    """Возвращает до `need` объявлений: автор ещё не в списке, объявление >сутки,
-    один автор — не чаще раза (в т.ч. в пределах запуска)."""
+def pick_candidates(contacted: dict, need: int, statuses: dict) -> list:
+    """Возвращает до `need` объявлений: автору ещё НЕ писали (ни бот локально, ни
+    кто-то вручную — статус «Да» в таблице), объявление >суток, один автор — не
+    чаще раза (в т.ч. в пределах запуска)."""
     seen_contacted = set(contacted.get("authors", {}).keys())
+    written = {k for k, v in (statuses or {}).items() if v == "Да"}
     picked, used = [], set()
     for row in outreach_queue.read_all():
         a = _norm_author(row.get("author"))
-        if not a or a in seen_contacted or a in used:
+        if not a or a in seen_contacted or a in used or a in written:
             continue
         if not is_old_enough(row):
             continue
@@ -180,6 +182,20 @@ async def send_all():
     accounts = state.setdefault("accounts", {})
     total_sent = 0
 
+    # Источник правды «кому уже писали» — таблица CRM (её ведут и бот, и агенты
+    # вручную). Читаем статусы ДО отправки; contacted.json остаётся локальным
+    # бэкапом (недоставучие + наши отправки — на случай, если таблица недоступна).
+    sheet = None
+    statuses = {}
+    if os.environ.get("SHEET_WEBHOOK_URL"):
+        from sheets import Sheet
+        sheet = Sheet()
+        statuses = sheet.read_statuses()
+        if statuses is None:
+            _log("⚠ не смог прочитать статусы CRM — пропускаю запуск, чтобы никого "
+                 "не написать дважды (повторим в следующий запуск)")
+            return
+
     for acct_id, session_str in sessions.items():
         acct = accounts.setdefault(acct_id, {})
         _refresh_day(acct)
@@ -201,7 +217,7 @@ async def send_all():
             _log(f"✓ аккаунт {acct_id}: дневной лимит {cap} исчерпан ({acct.get('sent_today',0)})")
             continue
 
-        cands = pick_candidates(contacted, remaining)
+        cands = pick_candidates(contacted, remaining, statuses)
         if not cands:
             _log(f"· аккаунт {acct_id}: подходящих авторов сейчас нет")
             continue
@@ -253,6 +269,8 @@ async def send_all():
                     "account": acct_id, "link": link,
                 }
                 _save_json(CONTACTED_FILE, contacted)
+                if sheet:
+                    sheet.mark_written(author)  # «Написали?»=Да в CRM (для агентов)
                 acct["sent_today"] = acct.get("sent_today", 0) + 1
                 acct["total"] = acct.get("total", 0) + 1
                 total_sent += 1
@@ -270,6 +288,10 @@ def dry_preview():
     contacted = _load_json(CONTACTED_FILE, {"authors": {}})
     state = _load_json(STATE_FILE, {"accounts": {}})
     sessions = _sessions() or {"1": "(нет сессии)"}
+    statuses = {}
+    if os.environ.get("SHEET_WEBHOOK_URL"):
+        from sheets import Sheet
+        statuses = Sheet().read_statuses() or {}
     print("🧪 ТЕСТ (OUTREACH_DRY): никому не пишу, только показываю план.\n")
     for acct_id in sessions:
         acct = state.get("accounts", {}).get(acct_id, {})
@@ -277,7 +299,7 @@ def dry_preview():
         _refresh_day(acct_copy)
         cap = _cap_today(acct_copy)
         remaining = min(PER_RUN, cap - acct_copy.get("sent_today", 0))
-        cands = pick_candidates(contacted, max(0, remaining))
+        cands = pick_candidates(contacted, max(0, remaining), statuses)
         print(f"— аккаунт {acct_id}: лимит сегодня {cap}, "
               f"отправлено {acct_copy.get('sent_today',0)}, за запуск ещё {max(0,remaining)}")
         for row in cands:

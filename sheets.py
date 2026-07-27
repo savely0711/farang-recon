@@ -1,5 +1,5 @@
 """
-Запись в Google-таблицу через Apps Script Web App.
+Запись в Google-таблицу через Apps Script Web App (режим CRM).
 
 Почему так (а не сервисный аккаунт): на наш сервер тяжело завезти большой
 JSON-ключ (консоль Aeza ломает крупную вставку, а репозиторий публичный — секрет
@@ -8,16 +8,19 @@ JSON-ключ (консоль Aeza ломает крупную вставку, �
 обычным POST-запросом. На сервере нужны только две короткие строки в .env:
 адрес скрипта (SHEET_WEBHOOK_URL) и общий пароль-токен (SHEET_TOKEN).
 
-ВАЖНО (надёжность): пишем ПАЧКАМИ (много строк за один запрос) и переживаем
-временные сбои Google — повторяем попытку несколько раз, и если так и не вышло,
-НЕ роняем весь прогон, а сообщаем об этом наверх (парсер пропустит/повторит позже).
+CRM: все авторы со всех каналов сводятся в ОДНУ вкладку «CRM» (её создаёт сам
+скрипт). Дедуп по нику делает скрипт таблицы — один ник = одна строка навсегда;
+существующая строка (и её «Написали?») при этом не перетирается.
+  Колонки: Ник | Ссылка | Канал | Категория | Дата | Описание | Написали?
+«Ник» — юзернейм автора поста (чтобы писать напрямую); других данных о
+пользователе не выносим (правило 3). «Описание» — первые слова поста для глаз.
 
-Структура таблицы (создаёт сам скрипт):
-  - вкладка на каждый канал (по имени из channels.py → ch["tab"]);
-  - колонки: Дата | Категория | Цена (฿) | Ссылка | Автор (ник) | Краткое описание.
-«Автор (ник)» — только юзернейм автора поста (чтобы писать ему напрямую, не
-проваливаясь в чат); больше никаких данных о пользователе не выносим (правило 3).
-«Краткое описание» — первые слова поста для глазной проверки.
+Связка с авто-рассылкой (outreach.py):
+  - read_statuses() — карта {ник: "Да"|"Нет"} по всей CRM (кому уже написали);
+  - mark_written(author) — ставит автору «Написали?»=Да после отправки.
+
+ВАЖНО (надёжность): пишем ПАЧКАМИ и переживаем временные сбои Google — повторяем
+несколько раз, и если не вышло, НЕ роняем прогон, а сообщаем наверх.
 """
 import os
 import time
@@ -25,6 +28,8 @@ import time
 import httpx
 
 from categories import ALL_CATEGORIES
+
+CRM_TAB = "CRM"
 
 # Сколько раз пробуем записать одну пачку, прежде чем сдаться (с паузами между).
 MAX_RETRIES = 3
@@ -36,39 +41,64 @@ class Sheet:
         self._url = os.environ["SHEET_WEBHOOK_URL"]
         self._token = os.environ.get("SHEET_TOKEN", "")
         # follow_redirects обязателен: Apps Script отвечает 302 на googleusercontent.
-        # timeout побольше: пачка строк пишется чуть дольше одной.
         self._client = httpx.Client(timeout=60.0, follow_redirects=True)
-        print("📊 Пишу в Google-таблицу через Apps Script Web App (пачками).")
+        print("📊 Пишу в Google-таблицу CRM через Apps Script Web App (пачками).")
 
     @staticmethod
     def _row(listing: dict) -> dict:
-        """Готовит «сырое» объявление к записи: красивая категория, цена, обрезка."""
+        """Готовит «сырое» объявление к записи в CRM (порядок колонок задаёт скрипт)."""
         cat_name = ALL_CATEGORIES.get(listing["category"], listing["category"])
-        price = listing["price"]
-        price_str = "" if price is None else ("даром" if price == 0 else str(price))
         snippet = (listing["snippet"] or "").replace("\n", " ").strip()[:120]
         author = listing.get("author") or ""
         return {
-            "date": listing["date"].strftime("%Y-%m-%d %H:%M"),
-            "category": cat_name,
-            "price": price_str,
+            "author": author,                 # ник автора (без @); пусто, если ника нет
             "link": listing["link"],
-            "author": author,   # ник автора поста (без @); пусто, если ника нет
+            "channel": listing.get("channel") or "",
+            "category": cat_name,
+            "date": listing["date"].strftime("%Y-%m-%d %H:%M"),
             "snippet": snippet,
         }
 
-    def flush(self, tab: str, listings: list) -> bool:
-        """Отправляет ПАЧКУ объявлений в одну вкладку одним запросом.
-        listings — список «сырых» dict (date/category/price/link/snippet).
-        Возвращает True при успехе; False — если Google так и не принял после
-        всех повторов. Наружу исключение НЕ бросаем — прогон не должен падать."""
+    def flush(self, listings: list) -> bool:
+        """Отправляет ПАЧКУ авторов в CRM одним запросом (канал — колонкой у каждой
+        строки). Дубли по нику отсекает скрипт таблицы. Возвращает True при успехе;
+        False — если Google так и не принял после повторов (наружу не бросаем)."""
         if not listings:
             return True
         payload = {
             "token": self._token,
-            "tab": tab,
+            "action": "append",
             "rows": [self._row(l) for l in listings],
         }
+        return self._post_retry(payload, note=f"пачка ({len(listings)} стр.)")
+
+    def read_statuses(self):
+        """Карта {ник(нижний, без @): "Да"|"Нет"} по всей CRM.
+        Возвращает dict при успехе (в т.ч. пустой {} для пустой таблицы) и None,
+        если прочитать так и не удалось — наверху None означает «статус неизвестен,
+        ради безопасности запуск отправки лучше пропустить»."""
+        params = {"action": "statuses", "token": self._token}
+        for attempt in range(MAX_RETRIES):
+            try:
+                r = self._client.get(self._url, params=params)
+                r.raise_for_status()
+                data = r.json()
+                if not data.get("ok"):
+                    raise RuntimeError(f"Apps Script вернул ошибку: {data}")
+                return data.get("statuses", {}) or {}
+            except Exception as e:  # noqa: BLE001
+                print(f"  ⚠ чтение статусов не удалось "
+                      f"(попытка {attempt + 1}/{MAX_RETRIES}): {e}")
+                if attempt < MAX_RETRIES - 1:
+                    time.sleep(RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)])
+        return None
+
+    def mark_written(self, author: str) -> bool:
+        """Ставит автору «Написали?»=Да в CRM. True при успехе."""
+        payload = {"token": self._token, "action": "mark", "author": author}
+        return self._post_retry(payload, note=f"пометка @{author}=Да")
+
+    def _post_retry(self, payload: dict, note: str) -> bool:
         last_err = None
         for attempt in range(MAX_RETRIES):
             try:
@@ -80,12 +110,9 @@ class Sheet:
                 return True
             except Exception as e:  # noqa: BLE001
                 last_err = e
-                print(f"  ⚠ запись пачки ({len(listings)} стр.) не удалась "
+                print(f"  ⚠ {note} не удалась "
                       f"(попытка {attempt + 1}/{MAX_RETRIES}): {e}")
                 if attempt < MAX_RETRIES - 1:
-                    wait = RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)]
-                    print(f"     повтор через {wait}с…")
-                    time.sleep(wait)
-        print(f"  ⛔ пачку записать не удалось — пропускаю на этот раз "
-              f"(повторим в следующий прогон): {last_err}")
+                    time.sleep(RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)])
+        print(f"  ⛔ {note} не удалась — пропускаю на этот раз: {last_err}")
         return False
