@@ -3,8 +3,10 @@
  *
  * НОВОЕ (CRM для обзвона): все авторы со ВСЕХ каналов сводятся в ОДНУ вкладку
  * «CRM». Один ник = одна строка НАВСЕГДА (дедуп по нику). У каждой строки есть
- * колонка «Написали?» (выпадашка Да/Нет, по умолчанию «Нет»). Когда там «Да» —
- * вся строка автоматически зеленеет. Так таблица становится общим списком для
+ * колонка «Написали?» (выпадашка Да / Нет / Премиум / Не доставлено, по
+ * умолчанию «Нет»). Строка красится сама: «Да» — зелёная, «Премиум» — жёлтая
+ * (человек принимает письма только от Premium-аккаунтов, пишем вручную),
+ * «Не доставлено» — серая (личка закрыта, ник исчез). Так таблица становится общим списком для
  * ручного обзвона агентами И одновременно источником правды для авто-рассылки
  * (outreach.py): бот перед письмом спрашивает статус, а после отправки сам
  * ставит «Да» — значит один человек не получит два обращения.
@@ -12,8 +14,9 @@
  * Действия (что умеет скрипт):
  *   POST {action:"append", rows:[{author,link,channel,category,date,snippet}]}
  *        — дописать новых авторов в CRM (дубли по нику отсекаются здесь же);
- *   POST {action:"mark",   author:"ник"}  — пометить автора «Написали?»=Да;
- *   GET  ?action=statuses                 — отдать карту {ник: "Да"|"Нет"};
+ *   POST {action:"mark", author:"ник", value:"Да"} — поставить автору статус
+ *        («Да» по умолчанию; ещё «Премиум» и «Не доставлено»);
+ *   GET  ?action=statuses                 — отдать карту {ник: статус};
  *   GET                                   — проверка «живой ли» (alive).
  * Во всех запросах обязателен общий пароль-токен (token), кроме простого alive.
  *
@@ -33,7 +36,14 @@ var CRM_TAB = 'CRM';
 var HEADER = ['Ник', 'Ссылка', 'Канал', 'Категория', 'Дата', 'Описание', 'Написали?'];
 var NICK_COL = 1;      // колонка «Ник» (A)
 var WRITTEN_COL = 7;   // колонка «Написали?» (G)
-var GREEN = '#b7e1cd'; // фон строки при «Да»
+var ST_DONE = 'Да';
+var ST_TODO = 'Нет';
+var ST_PREMIUM = 'Премиум';             // пишут только Premium — вручную
+var ST_UNDELIVERABLE = 'Не доставлено'; // личка закрыта, ник исчез
+var STATUSES = [ST_DONE, ST_TODO, ST_PREMIUM, ST_UNDELIVERABLE];
+var GREEN = '#b7e1cd';  // фон строки при «Да»
+var YELLOW = '#ffe599'; // фон строки при «Премиум»
+var GREY = '#d9d9d9';   // фон строки при «Не доставлено»
 
 // ─────────────────────────── ПРИЁМ (POST) ───────────────────────────
 function doPost(e) {
@@ -46,7 +56,7 @@ function doPost(e) {
     var sh = _ensureCrmSheet();
 
     if (action === 'mark') {
-      var found = _markWritten(sh, body.author);
+      var found = _markWritten(sh, body.author, body.value);
       return _json({ ok: true, found: found });
     }
 
@@ -96,14 +106,14 @@ function _ensureCrmSheet() {
     sh.setFrozenRows(1);
   }
   _ensureValidation(sh);
-  _ensureGreenRule(sh);
+  _ensureColorRules(sh);
   return sh;
 }
 
-/** Выпадашка Да/Нет на всю колонку «Написали?». */
+/** Выпадашка Да / Нет / Премиум / Не доставлено на всю колонку «Написали?». */
 function _ensureValidation(sh) {
   var rule = SpreadsheetApp.newDataValidation()
-    .requireValueInList(['Да', 'Нет'], true)
+    .requireValueInList(STATUSES, true)
     .setAllowInvalid(false)
     .build();
   var maxRows = sh.getMaxRows();
@@ -112,15 +122,22 @@ function _ensureValidation(sh) {
   }
 }
 
-/** Условное форматирование: вся строка зеленеет, если «Написали?»=Да. */
-function _ensureGreenRule(sh) {
+/** Условное форматирование: вся строка красится по статусу —
+ *  «Да» зелёная, «Премиум» жёлтая, «Не доставлено» серая. */
+function _ensureColorRules(sh) {
   var rng = sh.getRange(2, 1, Math.max(1, sh.getMaxRows() - 1), HEADER.length);
-  var rule = SpreadsheetApp.newConditionalFormatRule()
-    .whenFormulaSatisfied('=$G2="Да"')
-    .setBackground(GREEN)
-    .setRanges([rng])
-    .build();
-  sh.setConditionalFormatRules([rule]);
+  var pairs = [
+    [ST_DONE, GREEN], [ST_PREMIUM, YELLOW], [ST_UNDELIVERABLE, GREY],
+  ];
+  var rules = [];
+  for (var i = 0; i < pairs.length; i++) {
+    rules.push(SpreadsheetApp.newConditionalFormatRule()
+      .whenFormulaSatisfied('=$G2="' + pairs[i][0] + '"')
+      .setBackground(pairs[i][1])
+      .setRanges([rng])
+      .build());
+  }
+  sh.setConditionalFormatRules(rules);
 }
 
 /** Нормализованный ник: без @, нижний регистр, без пробелов по краям. */
@@ -153,34 +170,37 @@ function _appendDedup(sh, rows) {
     seen[nick] = true;
     values.push([
       r.author || '', r.link || '', r.channel || '',
-      r.category || '', r.date || '', r.snippet || '', 'Нет',
+      r.category || '', r.date || '', r.snippet || '', ST_TODO,
     ]);
   }
   if (values.length === 0) return 0;
   var startRow = sh.getLastRow() + 1;
   sh.getRange(startRow, 1, values.length, HEADER.length).setValues(values);
   _ensureValidation(sh);
-  _ensureGreenRule(sh);
+  _ensureColorRules(sh);
   return values.length;
 }
 
-/** Ставит «Написали?»=Да у автора (по нику). Возвращает true, если нашли. */
-function _markWritten(sh, author) {
+/** Ставит автору статус в «Написали?» (по нику): «Да» (по умолчанию),
+ *  «Премиум» или «Не доставлено». Возвращает true, если нашли строку. */
+function _markWritten(sh, author, value) {
   var target = _normNick(author);
   if (!target) return false;
+  var status = String(value || ST_DONE);
+  if (STATUSES.indexOf(status) === -1) status = ST_DONE;
   var last = sh.getLastRow();
   if (last < 2) return false;
   var nicks = sh.getRange(2, NICK_COL, last - 1, 1).getValues();
   for (var i = 0; i < nicks.length; i++) {
     if (_normNick(nicks[i][0]) === target) {
-      sh.getRange(i + 2, WRITTEN_COL).setValue('Да');
+      sh.getRange(i + 2, WRITTEN_COL).setValue(status);
       return true;
     }
   }
   return false;
 }
 
-/** Карта {ник: "Да"|"Нет"} по всей CRM (для outreach.py). */
+/** Карта {ник: статус} по всей CRM (для outreach.py). */
 function _readStatuses(sh) {
   var out = {};
   var last = sh.getLastRow();
@@ -190,7 +210,7 @@ function _readStatuses(sh) {
     var n = _normNick(vals[i][NICK_COL - 1]);
     if (!n) continue;
     var st = String(vals[i][WRITTEN_COL - 1] || '').trim();
-    out[n] = (st === 'Да') ? 'Да' : 'Нет';
+    out[n] = (STATUSES.indexOf(st) === -1) ? ST_TODO : st;
   }
   return out;
 }

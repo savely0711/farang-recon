@@ -16,8 +16,9 @@ CRM: все авторы со всех каналов сводятся в ОДН
 пользователе не выносим (правило 3). «Описание» — первые слова поста для глаз.
 
 Связка с авто-рассылкой (outreach.py):
-  - read_statuses() — карта {ник: "Да"|"Нет"} по всей CRM (кому уже написали);
-  - mark_written(author) — ставит автору «Написали?»=Да после отправки.
+  - read_statuses() — карта {ник: статус} по всей CRM (кому уже написали);
+  - mark_written(author, value) — ставит автору статус в «Написали?»
+    («Да» после отправки, «Премиум» или «Не доставлено» — если письмо не ушло);
 
 ВАЖНО (надёжность): пишем ПАЧКАМИ и переживаем временные сбои Google — повторяем
 несколько раз, и если не вышло, НЕ роняем прогон, а сообщаем наверх.
@@ -93,10 +94,13 @@ class Sheet:
                     time.sleep(RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)])
         return None
 
-    def mark_written(self, author: str) -> bool:
-        """Ставит автору «Написали?»=Да в CRM. True при успехе."""
-        payload = {"token": self._token, "action": "mark", "author": author}
-        return self._post_retry(payload, note=f"пометка @{author}=Да")
+    def mark_written(self, author: str, value: str = "Да") -> bool:
+        """Ставит автору статус в колонке «Написали?» CRM: «Да» (написали),
+        «Премиум» (пишут только Premium — Савелий напишет сам) или
+        «Не доставлено». True при успехе."""
+        payload = {"token": self._token, "action": "mark",
+                   "author": author, "value": value}
+        return self._post_retry(payload, note=f"пометка @{author}={value}")
 
     def _post_retry(self, payload: dict, note: str) -> bool:
         last_err = None

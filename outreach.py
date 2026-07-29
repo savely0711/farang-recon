@@ -12,7 +12,12 @@
     дальше диалог Савелий ведёт сам, как человек;
   - соблюдает ЩАДЯЩИЙ режим: дневной лимит на аккаунт с ПРОГРЕВОМ (растёт по
     дням), случайные паузы, только «человеческие» часы по Бангкоку;
-  - сразу записывает автора в contacted.json + строку в outreach.log.
+  - сразу записывает автора в contacted.json + строку в outreach.log;
+  - если письмо не ушло, разбирается ПОЧЕМУ и больше не топчется на одном
+    человеке: «нужен Premium» → статус «Премиум» в таблице (пишет Савелий сам),
+    «личка закрыта / ника нет» → «Не доставлено», временный сбой → ещё пара
+    попыток, потом тоже «Не доставлено». За один запуск пробует нескольких
+    авторов подряд (MAX_ATTEMPTS), пока одно письмо не уйдёт.
 
 БЕЗОПАСНОСТЬ (осознанный риск Савелия — рассылка первым это против правил TG):
   - по умолчанию ВЫКЛЮЧЕНО (OUTREACH_ENABLED=1 включает);
@@ -53,6 +58,19 @@ PER_RUN = int(os.environ.get("OUTREACH_PER_RUN", "1"))            # макс. з
 HOURS = os.environ.get("OUTREACH_HOURS", "10-20")                 # «человеческие» часы (Бангкок)
 DELAY_MIN = int(os.environ.get("OUTREACH_DELAY_MIN", "45"))       # пауза перед письмом, сек
 DELAY_MAX = int(os.environ.get("OUTREACH_DELAY_MAX", "180"))
+# сколько авторов пробуем за один запуск, пока одно письмо не уйдёт (глухие
+# авторы больше не съедают весь запуск)
+MAX_ATTEMPTS = int(os.environ.get("OUTREACH_MAX_ATTEMPTS", "5"))
+# столько неудач подряд по «временным» причинам — и автор помечается «Не доставлено»
+FAIL_LIMIT = int(os.environ.get("OUTREACH_FAIL_LIMIT", "3"))
+RETRY_DELAY_MIN = int(os.environ.get("OUTREACH_RETRY_DELAY_MIN", "5"))
+RETRY_DELAY_MAX = int(os.environ.get("OUTREACH_RETRY_DELAY_MAX", "15"))
+
+# статусы в колонке «Написали?» таблицы-CRM
+ST_DONE = "Да"
+ST_TODO = "Нет"
+ST_PREMIUM = "Премиум"        # пишут только Premium-аккаунты → Савелий напишет сам
+ST_UNDELIVERABLE = "Не доставлено"  # личка закрыта, ник исчез и т.п.
 
 BASE = os.path.dirname(__file__)
 CONTACTED_FILE = os.path.join(BASE, "contacted.json")
@@ -140,13 +158,51 @@ def _sessions() -> dict:
     return out
 
 
+def classify_error(e) -> str:
+    """Что за отказ: 'premium' (нужен Telegram Premium), 'permanent' (написать
+    никогда не выйдет), 'retry' (похоже на временный сбой — попробуем позже)."""
+    text = str(e).upper()
+    if "PREMIUM" in text:
+        return "premium"
+    name = type(e).__name__
+    permanent_names = {
+        "UserPrivacyRestrictedError", "UsernameNotOccupiedError",
+        "UsernameInvalidError", "UserIsBlockedError", "YouBlockedUserError",
+        "InputUserDeactivatedError", "UserDeactivatedError", "UserBannedInChannelError",
+        "PeerIdInvalidError", "UserIsBotError", "ForbiddenError", "ValueError",
+    }
+    if name in permanent_names:
+        return "permanent"
+    permanent_markers = (
+        "PRIVACY", "USERNAME_NOT_OCCUPIED", "USERNAME_INVALID", "PEER_ID_INVALID",
+        "USER_IS_BLOCKED", "USER_DEACTIVATED", "USER_BANNED", "CHAT_WRITE_FORBIDDEN",
+        "NO USER HAS", "CANNOT FIND ANY ENTITY",
+    )
+    for marker in permanent_markers:
+        if marker in text:
+            return "permanent"
+    return "retry"
+
+
+def _mark_bad(contacted, author, status, reason, acct_id):
+    """Больше к этому автору не возвращаемся (локальная память бота)."""
+    contacted["authors"][author] = {
+        "status": status, "reason": reason,
+        "at": datetime.now(timezone.utc).isoformat(), "account": acct_id,
+    }
+    _save_json(CONTACTED_FILE, contacted)
+
+
 # ─────────────────────── отбор кандидатов ───────────────────────
 def pick_candidates(contacted: dict, need: int, statuses: dict) -> list:
     """Возвращает до `need` объявлений: автору ещё НЕ писали (ни бот локально, ни
     кто-то вручную — статус «Да» в таблице), объявление >суток, один автор — не
     чаще раза (в т.ч. в пределах запуска)."""
     seen_contacted = set(contacted.get("authors", {}).keys())
-    written = {k for k, v in (statuses or {}).items() if v == "Да"}
+    # в таблице трогаем только тех, у кого «Нет»: «Да» (уже писали), «Премиум»
+    # (Савелий напишет сам) и «Не доставлено» — пропускаем
+    written = {k for k, v in (statuses or {}).items()
+               if str(v).strip() and str(v).strip() != ST_TODO}
     picked, used = [], set()
     for row in outreach_queue.read_all():
         a = _norm_author(row.get("author"))
@@ -164,10 +220,7 @@ def pick_candidates(contacted: dict, need: int, statuses: dict) -> list:
 # ─────────────────────── отправка ───────────────────────
 async def send_all():
     from telethon import TelegramClient
-    from telethon.errors import (
-        FloodWaitError, PeerFloodError, UserPrivacyRestrictedError,
-        UsernameNotOccupiedError, UsernameInvalidError,
-    )
+    from telethon.errors import FloodWaitError, PeerFloodError
     from telethon.sessions import StringSession
 
     api_id = int(os.environ["TG_API_ID"])
@@ -217,7 +270,8 @@ async def send_all():
             _log(f"✓ аккаунт {acct_id}: дневной лимит {cap} исчерпан ({acct.get('sent_today',0)})")
             continue
 
-        cands = pick_candidates(contacted, remaining, statuses)
+        # берём с запасом: глухие авторы не должны съедать весь запуск
+        cands = pick_candidates(contacted, remaining + MAX_ATTEMPTS, statuses)
         if not cands:
             _log(f"· аккаунт {acct_id}: подходящих авторов сейчас нет")
             continue
@@ -232,11 +286,21 @@ async def send_all():
             _log(f"🔑 аккаунт {acct_id} = @{getattr(me,'username',None) or me.first_name}; "
                  f"лимит сегодня {cap}, отправлено {acct.get('sent_today',0)}")
 
+            fails = state.setdefault("fails", {})
+            sent_here = 0
+            attempts = 0
             for row in cands:
+                if sent_here >= remaining or attempts >= MAX_ATTEMPTS:
+                    break
                 author = _norm_author(row["author"])
                 link = row["link"]
-                delay = random.randint(DELAY_MIN, DELAY_MAX)
-                await asyncio.sleep(delay)
+                attempts += 1
+                # перед первым письмом — «человеческая» пауза; после отказа
+                # (никто ничего не получил) достаточно короткой
+                if attempts == 1:
+                    await asyncio.sleep(random.randint(DELAY_MIN, DELAY_MAX))
+                else:
+                    await asyncio.sleep(random.randint(RETRY_DELAY_MIN, RETRY_DELAY_MAX))
                 try:
                     entity = await client.get_entity(author)
                     await client.send_message(entity, MESSAGE + link)
@@ -250,20 +314,39 @@ async def send_all():
                     acct["paused_until"] = tomorrow.astimezone(timezone.utc).isoformat()
                     _log(f"🚫 аккаунт {acct_id}: PeerFlood (TG ограничил рассылку) — пауза до утра")
                     break
-                except (UserPrivacyRestrictedError, UsernameNotOccupiedError,
-                        UsernameInvalidError, ValueError) as e:
-                    contacted["authors"][author] = {
-                        "status": "undeliverable", "reason": type(e).__name__,
-                        "at": datetime.now(timezone.utc).isoformat(), "account": acct_id,
-                    }
-                    _save_json(CONTACTED_FILE, contacted)
-                    _log(f"  ↷ @{author}: не доставить ({type(e).__name__}) — помечаю, иду дальше")
-                    continue
                 except Exception as e:  # noqa: BLE001
-                    _log(f"  ⚠ @{author}: непредвиденная ошибка ({type(e).__name__}: {e}) — пропускаю")
+                    kind = classify_error(e)
+                    reason = f"{type(e).__name__}: {e}"
+                    if kind == "premium":
+                        _mark_bad(contacted, author, "premium", reason, acct_id)
+                        if sheet:
+                            sheet.mark_written(author, ST_PREMIUM)
+                        _log(f"  ⭐ @{author}: принимает письма только от Premium — "
+                             f"пометил «{ST_PREMIUM}», пишет Савелий сам")
+                    elif kind == "permanent":
+                        _mark_bad(contacted, author, "undeliverable", reason, acct_id)
+                        if sheet:
+                            sheet.mark_written(author, ST_UNDELIVERABLE)
+                        _log(f"  ↷ @{author}: написать не выйдет ({type(e).__name__}) — "
+                             f"пометил «{ST_UNDELIVERABLE}»")
+                    else:
+                        n = fails.get(author, 0) + 1
+                        fails[author] = n
+                        if n >= FAIL_LIMIT:
+                            fails.pop(author, None)
+                            _mark_bad(contacted, author, "undeliverable", reason, acct_id)
+                            if sheet:
+                                sheet.mark_written(author, ST_UNDELIVERABLE)
+                            _log(f"  ↷ @{author}: {n} сбоя подряд ({type(e).__name__}) — "
+                                 f"пометил «{ST_UNDELIVERABLE}»")
+                        else:
+                            _log(f"  ↻ @{author}: временный сбой ({type(e).__name__}: {e}) — "
+                                 f"попробую ещё (попытка {n} из {FAIL_LIMIT})")
+                        _save_json(STATE_FILE, state)
                     continue
 
                 # успех
+                fails.pop(author, None)
                 contacted["authors"][author] = {
                     "status": "sent", "at": datetime.now(timezone.utc).isoformat(),
                     "account": acct_id, "link": link,
@@ -273,6 +356,7 @@ async def send_all():
                     sheet.mark_written(author)  # «Написали?»=Да в CRM (для агентов)
                 acct["sent_today"] = acct.get("sent_today", 0) + 1
                 acct["total"] = acct.get("total", 0) + 1
+                sent_here += 1
                 total_sent += 1
                 _save_json(STATE_FILE, state)
                 _log(f"  ✉ @{author} ← аккаунт {acct_id}  {link}")
