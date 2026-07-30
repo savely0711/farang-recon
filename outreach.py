@@ -7,8 +7,10 @@
   - отбирает тех, кому МОЖНО написать: объявление старше суток И автору ещё
     НИ РАЗУ не писали (вечный список contacted.json — один автор = одно
     сообщение навсегда);
-  - с 2–3 личных аккаунтов Савелия (по очереди) шлёт короткое сообщение:
-        «Здравствуйте! Ваше объявление ещё актуально? <ссылка>»
+  - с 2–3 личных аккаунтов Савелия (по очереди) шлёт короткое сообщение,
+    каждый раз выбирая СЛУЧАЙНЫЙ вариант формулировки («Здравствуйте! Ваше
+    объявление ещё актуально? <ссылка>» и т.п.) — одинаковый текст всем подряд
+    антиспам Telegram замечает быстрее всего;
     дальше диалог Савелий ведёт сам, как человек;
   - соблюдает ЩАДЯЩИЙ режим: дневной лимит на аккаунт с ПРОГРЕВОМ (растёт по
     дням), случайные паузы, только «человеческие» часы по Бангкоку;
@@ -22,7 +24,11 @@
 БЕЗОПАСНОСТЬ (осознанный риск Савелия — рассылка первым это против правил TG):
   - по умолчанию ВЫКЛЮЧЕНО (OUTREACH_ENABLED=1 включает);
   - если Telegram ограничивает аккаунт (PeerFlood/FloodWait) — аккаунт ставится
-    на паузу, программа не давит дальше;
+    на паузу с нарастающим сроком (6 ч → сутки → трое суток, счётчик сбрасывает
+    первое же удачное письмо), а Савелию в личку уходит предупреждение, чтобы
+    простой не остался незамеченным;
+  - адреса авторов запоминаются (peers.json): повторный поиск ника через
+    Telegram не выполняется — меньше «спамных» обращений к API;
   - за один запуск с аккаунта уходит максимум OUTREACH_PER_RUN сообщений (по
     умолчанию 1) — реальный объём набирается частыми мелкими запусками (cron),
     так это выглядит по-человечески и размазано во времени.
@@ -47,9 +53,27 @@ BKK = timezone(timedelta(hours=7))
 # ── настройки (значения по умолчанию — щадящие) ──
 ENABLED = os.environ.get("OUTREACH_ENABLED") == "1"
 DRY = os.environ.get("OUTREACH_DRY") == "1"
-MESSAGE = os.environ.get(
-    "OUTREACH_MESSAGE", "Здравствуйте! Ваше объявление ещё актуально? "
-)
+# ── текст письма: НЕСКОЛЬКО вариантов ──
+# Один и тот же текст всем подряд — самый заметный признак рассылки для
+# антиспама Telegram. Поэтому берём случайный вариант из списка. Формулировки
+# нейтральные: подходят и продаже, и аренде, и услугам.
+DEFAULT_MESSAGES = [
+    "Здравствуйте! Ваше объявление ещё актуально? ",
+    "Добрый день! Подскажите, объявление ещё в силе? ",
+    "Добрый день! Ещё актуально? ",
+    "Здравствуйте! Интересует ваше объявление — оно ещё актуально? ",
+    "Здравствуйте! Подскажите, объявление ещё актуально? ",
+    "Добрый день! Ваше объявление ещё в силе? ",
+]
+# можно переопределить из .env: варианты через «|»
+_env_msgs = os.environ.get("OUTREACH_MESSAGES", "")
+MESSAGES = [m for m in _env_msgs.split("|") if m.strip()] or DEFAULT_MESSAGES
+# старая одиночная настройка: если задана — используется всегда (обратная совместимость)
+MESSAGE_FIXED = os.environ.get("OUTREACH_MESSAGE", "").strip()
+
+
+def pick_message() -> str:
+    return MESSAGE_FIXED + " " if MESSAGE_FIXED else random.choice(MESSAGES)
 MIN_AGE_HOURS = int(os.environ.get("OUTREACH_MIN_AGE_HOURS", "24"))
 DAILY_START = int(os.environ.get("OUTREACH_DAILY_START", "5"))    # старт прогрева
 DAILY_MAX = int(os.environ.get("OUTREACH_DAILY_MAX", "18"))       # потолок в день
@@ -65,6 +89,13 @@ MAX_ATTEMPTS = int(os.environ.get("OUTREACH_MAX_ATTEMPTS", "5"))
 FAIL_LIMIT = int(os.environ.get("OUTREACH_FAIL_LIMIT", "3"))
 RETRY_DELAY_MIN = int(os.environ.get("OUTREACH_RETRY_DELAY_MIN", "5"))
 RETRY_DELAY_MAX = int(os.environ.get("OUTREACH_RETRY_DELAY_MAX", "15"))
+# кому в Telegram слать предупреждение, если рассылка встала (ник Савелия)
+NOTIFY_TO = os.environ.get("OUTREACH_NOTIFY_TO", "").strip()
+# «умная пауза» после PeerFlood: первая блокировка — 6 ч, вторая подряд — сутки,
+# третья и дальше — трое суток. Счётчик обнуляется, как только письмо ушло.
+PF_STEPS_HOURS = [
+    int(x) for x in os.environ.get("OUTREACH_PEERFLOOD_STEPS", "6,24,72").split(",")
+]
 
 # статусы в колонке «Написали?» таблицы-CRM
 ST_DONE = "Да"
@@ -76,6 +107,8 @@ BASE = os.path.dirname(__file__)
 CONTACTED_FILE = os.path.join(BASE, "contacted.json")
 STATE_FILE = os.path.join(BASE, "outreach_state.json")
 LOG_FILE = os.path.join(BASE, "outreach.log")
+# запомненные «адреса» авторов: чтобы не дёргать Telegram поиском ника заново
+PEERS_FILE = os.path.join(BASE, "peers.json")
 
 import outreach_queue
 
@@ -184,6 +217,40 @@ def classify_error(e) -> str:
     return "retry"
 
 
+async def notify(client, text: str) -> None:
+    """Предупреждение Савелию в личку (с отправляющего аккаунта). Если ник не
+    задан или отправить не вышло — просто пишем в лог, работу не ломаем."""
+    if not NOTIFY_TO:
+        return
+    try:
+        await client.send_message(NOTIFY_TO, text)
+        _log(f"  🔔 предупредил {NOTIFY_TO}")
+    except Exception as e:  # noqa: BLE001
+        _log(f"  (не смог отправить предупреждение: {type(e).__name__}: {e})")
+
+
+def peer_from_cache(peers: dict, author: str):
+    """Готовый «адрес» автора из памяти — тогда поиск ника через Telegram не нужен."""
+    rec = peers.get(author)
+    if not rec:
+        return None
+    try:
+        from telethon.tl.types import InputPeerUser
+        return InputPeerUser(int(rec["id"]), int(rec["hash"]))
+    except (KeyError, TypeError, ValueError, ImportError):
+        return None
+
+
+def peer_to_cache(peers: dict, author: str, entity) -> None:
+    uid = getattr(entity, "id", None)
+    ahash = getattr(entity, "access_hash", None)
+    if uid is None or ahash is None:
+        return
+    peers[author] = {"id": uid, "hash": ahash,
+                     "at": datetime.now(timezone.utc).isoformat()}
+    _save_json(PEERS_FILE, peers)
+
+
 def _mark_bad(contacted, author, status, reason, acct_id):
     """Больше к этому автору не возвращаемся (локальная память бота)."""
     contacted["authors"][author] = {
@@ -232,6 +299,7 @@ async def send_all():
 
     state = _load_json(STATE_FILE, {"accounts": {}})
     contacted = _load_json(CONTACTED_FILE, {"authors": {}})
+    peers = _load_json(PEERS_FILE, {})
     accounts = state.setdefault("accounts", {})
     total_sent = 0
 
@@ -302,17 +370,34 @@ async def send_all():
                 else:
                     await asyncio.sleep(random.randint(RETRY_DELAY_MIN, RETRY_DELAY_MAX))
                 try:
-                    entity = await client.get_entity(author)
-                    await client.send_message(entity, MESSAGE + link)
+                    entity = peer_from_cache(peers, author)
+                    if entity is None:
+                        entity = await client.get_entity(author)
+                        peer_to_cache(peers, author, entity)
+                    await client.send_message(entity, pick_message() + link)
                 except FloodWaitError as e:
                     until = datetime.now(timezone.utc) + timedelta(seconds=e.seconds + 30)
                     acct["paused_until"] = until.isoformat()
                     _log(f"⏳ аккаунт {acct_id}: FloodWait {e.seconds}с — пауза до {until.isoformat()}")
+                    if e.seconds >= 600:
+                        await notify(client, (
+                            "⏳ Фаранг-рассылка: Telegram просит подождать "
+                            f"{round(e.seconds / 3600, 1)} ч. Отправка приостановлена "
+                            f"до {until.astimezone(BKK).strftime('%d.%m %H:%M')} по Бангкоку."))
                     break
                 except PeerFloodError:
-                    tomorrow = datetime.now(BKK).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
-                    acct["paused_until"] = tomorrow.astimezone(timezone.utc).isoformat()
-                    _log(f"🚫 аккаунт {acct_id}: PeerFlood (TG ограничил рассылку) — пауза до утра")
+                    streak = acct.get("peerflood_streak", 0) + 1
+                    acct["peerflood_streak"] = streak
+                    hours = PF_STEPS_HOURS[min(streak, len(PF_STEPS_HOURS)) - 1]
+                    until = datetime.now(timezone.utc) + timedelta(hours=hours)
+                    acct["paused_until"] = until.isoformat()
+                    _log(f"🚫 аккаунт {acct_id}: PeerFlood (TG ограничил рассылку), "
+                         f"подряд {streak}-й раз — пауза {hours} ч, до {until.isoformat()}")
+                    await notify(client, (
+                        "⚠️ Фаранг-рассылка встала: Telegram ограничил отправку "
+                        f"сообщений незнакомым (PeerFlood), подряд {streak}-й раз.\n"
+                        f"Пауза {hours} ч — до {until.astimezone(BKK).strftime('%d.%m %H:%M')} "
+                        "по Бангкоку, дальше попробую снова сам."))
                     break
                 except Exception as e:  # noqa: BLE001
                     kind = classify_error(e)
@@ -347,6 +432,7 @@ async def send_all():
 
                 # успех
                 fails.pop(author, None)
+                acct["peerflood_streak"] = 0  # цепочка блокировок прервана
                 contacted["authors"][author] = {
                     "status": "sent", "at": datetime.now(timezone.utc).isoformat(),
                     "account": acct_id, "link": link,
@@ -388,8 +474,14 @@ def dry_preview():
               f"отправлено {acct_copy.get('sent_today',0)}, за запуск ещё {max(0,remaining)}")
         for row in cands:
             print(f"    → @{_norm_author(row['author'])}  {row['link']}")
-    print(f"\nТекст: «{MESSAGE}<ссылка>»")
+    if MESSAGE_FIXED:
+        print(f"\nТекст (задан в .env): «{MESSAGE_FIXED} <ссылка>»")
+    else:
+        print("\nВарианты текста (берётся случайный):")
+        for m in MESSAGES:
+            print(f"    • «{m}<ссылка>»")
     print(f"Часы отправки (Бангкок): {HOURS}; сейчас в окне: {within_hours()}")
+    print(f"Предупреждения о блокировке: {NOTIFY_TO or '(ник не задан — не шлю)'}")
 
 
 def main():
