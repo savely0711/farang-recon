@@ -27,7 +27,25 @@ CHANNELS = [
         "title": "Объявления Паттайя (SEA)",
         "tab": "baraholka_pattaya_ru",
     },
-    # --- добавим после первого прогона ---
-    # {"username": "...", "title": "PATTAYA CHAT", "tab": "pattaya_chat"},
-    # {"username": "...", "title": "Чат Паттайя БАРАХОЛКА", "tab": "baraholka_bg"},
+    # --- добавлены 03.08.2026 (проверены: открытые, живые) ---
+    {
+        "username": "pattaya2nd",
+        "title": "Паттайя Барахолка (2nd)",   # ~15,5 тыс. участников
+        "tab": "pattaya2nd",
+    },
+    {
+        "username": "barakholka_pattaia",
+        "title": "Паттайя Барахолка / Объявления",   # ~11,2 тыс.
+        "tab": "barakholka_pattaia",
+    },
+    {
+        "username": "pattaya_baraholka77",
+        "title": "Паттайя Объявления | Барахолка",   # ~4,8 тыс.
+        "tab": "pattaya_baraholka77",
+    },
+    {
+        "username": "pattaya_happy_ads",
+        "title": "Паттайя - Объявления/Барахолка",   # ~10 тыс.
+        "tab": "pattaya_happy_ads",
+    },
 ]

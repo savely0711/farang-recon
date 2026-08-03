@@ -14,6 +14,11 @@
     дальше диалог Савелий ведёт сам, как человек;
   - соблюдает ЩАДЯЩИЙ режим: дневной лимит на аккаунт с ПРОГРЕВОМ (растёт по
     дням), случайные паузы, только «человеческие» часы по Бангкоку;
+  - ГЛАВНОЕ ПРАВИЛО ТЕМПА: между двумя письмами ОДНОГО аккаунта проходит не
+    меньше OUTREACH_MIN_GAP_MIN минут (по умолчанию 25) плюс случайная добавка
+    до OUTREACH_GAP_JITTER_MIN минут — чтобы не выглядело «как по часам».
+    Правило живёт в самом боте (в файле состояния), поэтому его не сломает ни
+    сбитое расписание cron, ни настройка OUTREACH_PER_RUN больше единицы;
   - сразу записывает автора в contacted.json + строку в outreach.log;
   - если письмо не ушло, разбирается ПОЧЕМУ и больше не топчется на одном
     человеке: «нужен Premium» → статус «Премиум» в таблице (пишет Савелий сам),
@@ -24,9 +29,12 @@
 БЕЗОПАСНОСТЬ (осознанный риск Савелия — рассылка первым это против правил TG):
   - по умолчанию ВЫКЛЮЧЕНО (OUTREACH_ENABLED=1 включает);
   - если Telegram ограничивает аккаунт (PeerFlood/FloodWait) — аккаунт ставится
-    на паузу с нарастающим сроком (6 ч → сутки → трое суток, счётчик сбрасывает
-    первое же удачное письмо), а Савелию в личку уходит предупреждение, чтобы
-    простой не остался незамеченным;
+    на паузу с нарастающим сроком: первая блокировка 6 ч, вторая ПОДРЯД сутки,
+    третья и дальше трое суток. «Подряд» = новая блокировка случилась в течение
+    OUTREACH_PEERFLOOD_RESET_HOURS часов (по умолчанию сутки) после того, как
+    закончилась прошлая пауза. Прошли эти сутки спокойно или ушло хоть одно
+    письмо — счёт начинается заново с 6 часов. Савелию в личку уходит
+    предупреждение, чтобы простой не остался незамеченным;
   - адреса авторов запоминаются (peers.json): повторный поиск ника через
     Telegram не выполняется — меньше «спамных» обращений к API;
   - за один запуск с аккаунта уходит максимум OUTREACH_PER_RUN сообщений (по
@@ -79,6 +87,12 @@ DAILY_START = int(os.environ.get("OUTREACH_DAILY_START", "5"))    # старт �
 DAILY_MAX = int(os.environ.get("OUTREACH_DAILY_MAX", "18"))       # потолок в день
 WARMUP_STEP = int(os.environ.get("OUTREACH_WARMUP_STEP", "2"))    # +N/день
 PER_RUN = int(os.environ.get("OUTREACH_PER_RUN", "1"))            # макс. за 1 запуск/аккаунт
+# ── ТЕМП: минимальный «отдых» аккаунта между двумя письмами ──
+# Это главная защита от спешки. Считается по часам самого бота (файл состояния),
+# а не по расписанию cron: даже если запуски пойдут чаще или PER_RUN окажется
+# больше 1, письмо не уйдёт, пока не отдохнёт положенное.
+MIN_GAP_MIN = int(os.environ.get("OUTREACH_MIN_GAP_MIN", "25"))   # минимум минут между письмами
+GAP_JITTER_MIN = int(os.environ.get("OUTREACH_GAP_JITTER_MIN", "10"))  # случайная добавка 0..N мин
 HOURS = os.environ.get("OUTREACH_HOURS", "10-20")                 # «человеческие» часы (Бангкок)
 DELAY_MIN = int(os.environ.get("OUTREACH_DELAY_MIN", "45"))       # пауза перед письмом, сек
 DELAY_MAX = int(os.environ.get("OUTREACH_DELAY_MAX", "180"))
@@ -92,10 +106,15 @@ RETRY_DELAY_MAX = int(os.environ.get("OUTREACH_RETRY_DELAY_MAX", "15"))
 # кому в Telegram слать предупреждение, если рассылка встала (ник Савелия)
 NOTIFY_TO = os.environ.get("OUTREACH_NOTIFY_TO", "").strip()
 # «умная пауза» после PeerFlood: первая блокировка — 6 ч, вторая подряд — сутки,
-# третья и дальше — трое суток. Счётчик обнуляется, как только письмо ушло.
+# третья и дальше — трое суток.
 PF_STEPS_HOURS = [
     int(x) for x in os.environ.get("OUTREACH_PEERFLOOD_STEPS", "6,24,72").split(",")
 ]
+# Что считать «подряд». Счётчик обнуляется в двух случаях: (1) ушло удачное
+# письмо; (2) после окончания прошлой паузы бот проработал столько часов без
+# новой блокировки. Иначе редкие блокировки раз в несколько дней складывались бы
+# в трёхсуточный простой — это неверно.
+PF_RESET_HOURS = int(os.environ.get("OUTREACH_PEERFLOOD_RESET_HOURS", "24"))
 
 # статусы в колонке «Написали?» таблицы-CRM
 ST_DONE = "Да"
@@ -146,6 +165,47 @@ def within_hours() -> bool:
 
 def _norm_author(a) -> str:
     return (a or "").lstrip("@").strip().lower()
+
+
+def _now():
+    return datetime.now(timezone.utc)
+
+
+def _parse_dt(iso):
+    """Строка времени из файла состояния → дата. Мусор и пустота → None."""
+    try:
+        dt = datetime.fromisoformat(iso)
+    except (TypeError, ValueError):
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def gap_left_min(acct: dict) -> int:
+    """Сколько минут аккаунту ещё «отдыхать» после прошлого письма (0 — можно слать)."""
+    na = _parse_dt(acct.get("next_allowed_at"))
+    if not na:
+        return 0
+    seconds = (na - _now()).total_seconds()
+    return max(0, -(-int(seconds) // 60)) if seconds > 0 else 0
+
+
+def set_next_allowed(acct: dict) -> int:
+    """После удачного письма: запоминаем время и когда аккаунту можно снова."""
+    wait = MIN_GAP_MIN + (random.randint(0, GAP_JITTER_MIN) if GAP_JITTER_MIN > 0 else 0)
+    now = _now()
+    acct["last_sent_at"] = now.isoformat()
+    acct["next_allowed_at"] = (now + timedelta(minutes=wait)).isoformat()
+    return wait
+
+
+def peerflood_streak(acct: dict) -> tuple:
+    """Какая это блокировка ПОДРЯД. Если после окончания прошлой паузы бот
+    спокойно проработал PF_RESET_HOURS часов — счёт начинается заново.
+    Возвращает (номер по счёту, было ли обнуление)."""
+    prev_end = _parse_dt(acct.get("pf_pause_end"))
+    if prev_end and (_now() - prev_end) >= timedelta(hours=PF_RESET_HOURS):
+        return 1, True
+    return acct.get("peerflood_streak", 0) + 1, False
 
 
 def is_old_enough(row) -> bool:
@@ -332,6 +392,13 @@ async def send_all():
                 pass
             acct["paused_until"] = None
 
+        # темп: с прошлого письма должно пройти не меньше MIN_GAP_MIN минут
+        left = gap_left_min(acct)
+        if left:
+            _log(f"⏱ аккаунт {acct_id}: после прошлого письма отдыхает ещё {left} мин "
+                 f"(минимум {MIN_GAP_MIN} мин между письмами) — пропускаю")
+            continue
+
         cap = _cap_today(acct)
         remaining = min(PER_RUN, cap - acct.get("sent_today", 0))
         if remaining <= 0:
@@ -386,11 +453,15 @@ async def send_all():
                             f"до {until.astimezone(BKK).strftime('%d.%m %H:%M')} по Бангкоку."))
                     break
                 except PeerFloodError:
-                    streak = acct.get("peerflood_streak", 0) + 1
+                    streak, restarted = peerflood_streak(acct)
                     acct["peerflood_streak"] = streak
                     hours = PF_STEPS_HOURS[min(streak, len(PF_STEPS_HOURS)) - 1]
                     until = datetime.now(timezone.utc) + timedelta(hours=hours)
                     acct["paused_until"] = until.isoformat()
+                    acct["pf_pause_end"] = until.isoformat()  # от этой точки считаем «подряд»
+                    if restarted:
+                        _log(f"   (с прошлой блокировки прошло больше {PF_RESET_HOURS} ч "
+                             "спокойной работы — считаю заново с первой)")
                     _log(f"🚫 аккаунт {acct_id}: PeerFlood (TG ограничил рассылку), "
                          f"подряд {streak}-й раз — пауза {hours} ч, до {until.isoformat()}")
                     await notify(client, (
@@ -433,6 +504,7 @@ async def send_all():
                 # успех
                 fails.pop(author, None)
                 acct["peerflood_streak"] = 0  # цепочка блокировок прервана
+                acct["pf_pause_end"] = None
                 contacted["authors"][author] = {
                     "status": "sent", "at": datetime.now(timezone.utc).isoformat(),
                     "account": acct_id, "link": link,
@@ -444,8 +516,14 @@ async def send_all():
                 acct["total"] = acct.get("total", 0) + 1
                 sent_here += 1
                 total_sent += 1
+                wait = set_next_allowed(acct)
                 _save_json(STATE_FILE, state)
                 _log(f"  ✉ @{author} ← аккаунт {acct_id}  {link}")
+                if MIN_GAP_MIN > 0:
+                    # темп: следующее письмо с этого аккаунта — не раньше чем через
+                    # wait минут, поэтому запуск для него на этом и заканчивается
+                    _log(f"  ⏱ аккаунт {acct_id}: следующее письмо не раньше чем через {wait} мин")
+                    break
         finally:
             await client.disconnect()
             _save_json(STATE_FILE, state)
@@ -472,6 +550,13 @@ def dry_preview():
         cands = pick_candidates(contacted, max(0, remaining), statuses)
         print(f"— аккаунт {acct_id}: лимит сегодня {cap}, "
               f"отправлено {acct_copy.get('sent_today',0)}, за запуск ещё {max(0,remaining)}")
+        left = gap_left_min(acct_copy)
+        print(f"    темп: минимум {MIN_GAP_MIN} мин между письмами (+до {GAP_JITTER_MIN} мин "
+              f"случайно); " + (f"сейчас отдыхает ещё {left} мин" if left else "можно слать"))
+        pu = acct_copy.get("paused_until")
+        if pu:
+            print(f"    пауза после блокировки: до {pu} "
+                  f"(подряд {acct_copy.get('peerflood_streak', 0)}-я)")
         for row in cands:
             print(f"    → @{_norm_author(row['author'])}  {row['link']}")
     if MESSAGE_FIXED:
