@@ -128,25 +128,37 @@ if os.path.exists(CONTACTED):
     line(f"    авторов в памяти: {len(c)} (отправлено {sent}, остальные — недоставучие)")
 
 line()
-line("── Письма за сегодня (по журналу) ──")
-today = datetime.now(BKK).strftime("%Y-%m-%d")
-sends, prev = [], None
+line("── Последние письма (по журналу, с интервалами) ──")
+sends, blocks = [], []
 if os.path.exists(LOG):
     for ln in open(LOG, encoding="utf-8", errors="replace"):
-        if ln.startswith(today) and "✉" in ln:
+        if "✉" in ln:
             sends.append(ln.rstrip())
-for s in sends:
-    m = re.match(r"\d{4}-\d{2}-\d{2}\s+(\d{2}):(\d{2})", s)
+        elif "PeerFlood" in ln or "FloodWait" in ln:
+            blocks.append(ln.rstrip())
+prev_day, prev = None, None
+for s in sends[-15:]:
+    m = re.match(r"(\d{4}-\d{2}-\d{2})\s+(\d{2}):(\d{2})", s)
     gap = ""
     if m:
-        cur = int(m.group(1)) * 60 + int(m.group(2))
-        if prev is not None:
+        day, cur = m.group(1), int(m.group(2)) * 60 + int(m.group(3))
+        if prev is not None and day == prev_day:
             d = cur - prev
             gap = f"   [интервал {d} мин]" + ("  ⚠ МАЛО" if d < 20 else "")
-        prev = cur
+        prev_day, prev = day, cur
     line(f"    {s}{gap}")
 if not sends:
-    line("    (сегодня писем не было)")
+    line("    (писем в журнале нет)")
+today = datetime.now(BKK).strftime("%Y-%m-%d")
+line(f"    Всего писем в журнале: {len(sends)}, из них сегодня: "
+     f"{sum(1 for s in sends if s.startswith(today))}")
+
+line()
+line("── Блокировки (по журналу) ──")
+for b in blocks[-10:]:
+    line(f"    {b}")
+if not blocks:
+    line("    (блокировок не было)")
 
 line()
 line(f"── Хвост журнала ({TAIL} строк) ──")
