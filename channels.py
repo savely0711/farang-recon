@@ -28,10 +28,11 @@ CHANNELS = [
         "tab": "baraholka_pattaya_ru",
     },
     # --- добавлены 03.08.2026 (проверены: открытые, живые) ---
+    # @pattaya2nd не берём: Савелий не смог вступить в группу.
     {
-        "username": "pattaya2nd",
-        "title": "Паттайя Барахолка (2nd)",   # ~15,5 тыс. участников
-        "tab": "pattaya2nd",
+        "username": "Pattaia_barakholka",
+        "title": "Паттайа Чат Объявления Барахолка №1",   # ~6,3 тыс. участников
+        "tab": "Pattaia_barakholka",
     },
     {
         "username": "barakholka_pattaia",
