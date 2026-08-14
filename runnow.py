@@ -6,6 +6,7 @@
 Этот скрипт делает то же самое сам.
 
 Запуск:  python3 runnow.py
+(флаг -u: питон пишет в лог сразу, а не копит буфер — чтобы tail показывал ход)
 Смотреть ход:  tail -n 40 recon.log
 """
 import os
@@ -17,7 +18,7 @@ LOG = os.path.join(HERE, "recon.log")
 
 with open(LOG, "a", encoding="utf-8") as log:
     p = subprocess.Popen(
-        [sys.executable, "parser.py"],
+        [sys.executable, "-u", "parser.py"],
         cwd=HERE, stdout=log, stderr=subprocess.STDOUT,
         stdin=subprocess.DEVNULL, start_new_session=True,
     )
