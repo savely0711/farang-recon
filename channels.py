@@ -49,4 +49,25 @@ CHANNELS = [
         "title": "Паттайя - Объявления/Барахолка",   # ~10 тыс.
         "tab": "pattaya_happy_ads",
     },
+    # --- добавлены 14.08.2026 (Савелий вступил руками; проверены: открытые, живые) ---
+    {
+        "username": "pattaia_chatt",
+        "title": "Паттайя Барахолка Аренда",   # ~23,7 тыс. — сеть SEA, много перепостов
+        "tab": "pattaia_chatt",
+    },
+    {
+        "username": "pattaiaFeeds",
+        "title": "Паттайя Чат Объявления / Аренда",   # ~14,4 тыс.
+        "tab": "pattaiaFeeds",
+    },
+    {
+        "username": "baraholkaPattayaGo",
+        "title": "Барахолка Паттайя Вещи",   # ~8,1 тыс.
+        "tab": "baraholkaPattayaGo",
+    },
+    {
+        "username": "Thailand_friend",
+        "title": "Работа, услуги, продажа. Паттайя",   # ~5,2 тыс. — много работы/услуг
+        "tab": "Thailand_friend",
+    },
 ]
