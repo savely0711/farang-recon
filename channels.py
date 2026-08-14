@@ -70,4 +70,20 @@ CHANNELS = [
         "title": "Работа, услуги, продажа. Паттайя",   # ~5,2 тыс. — много работы/услуг
         "tab": "Thailand_friend",
     },
+    # --- добавлены 14.08.2026, вторая пачка ---
+    {
+        "username": "pattayabaraholka",
+        "title": "Паттайя Авито Барахолка",   # ~0,6 тыс.
+        "tab": "pattayabaraholka",
+    },
+    {
+        "username": "pattayaBaraholkaa",
+        "title": "Паттайя Барахолка Объявления",   # ~5,9 тыс.
+        "tab": "pattayaBaraholkaa",
+    },
+    {
+        "username": "it_market_pattaya",
+        "title": "Барахолка и аренда IT тусовки",   # ~0,4 тыс., ядро аудитории
+        "tab": "it_market_pattaya",
+    },
 ]
