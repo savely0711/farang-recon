@@ -2,7 +2,13 @@
 ИИ-разбор поста барахолки. Один вызов Claude на пост:
   - объявление ли это о товаре/услуге (или просто болтовня в чате),
   - категория (slug из categories.py),
-  - цена в батах (число) или null.
+  - цена в батах (число) или null,
+  - тип продавца: частник или бизнес (is_business).
+
+Тип продавца добавлен 17.08.2026 (мини-CRM «Присутствие»): ИИ всё равно читает
+текст поста, поэтому признак достаётся тем же единственным запросом — лишних
+трат нет. Он нужен, чтобы отделять агентства недвижимости на свою вкладку
+таблицы и чтобы потом можно было отделить любой другой тип бизнеса.
 
 Личные данные НЕ извлекаем и НЕ храним (правило Направления 3).
 Используется дешёвая быстрая модель (haiku) — как на сайте для модерации.
@@ -70,8 +76,16 @@ _SYSTEM = (
     "«Договорная», «даром», «бесплатно» → price_thb=0.\n"
     "- Категорию выбирай по сути предмета. Недвижимость→realty, авто/мото→auto, "
     "услуги/работа→services. Если объявление, но не подходит ничего — other.\n"
+    "- is_business: true, если пишет НЕ частное лицо со своей вещью, а бизнес. "
+    "Признаки бизнеса: продаёт или сдаёт ЧУЖОЕ за комиссию (агентство, риелтор, "
+    "посредник), много объектов или позиций сразу, прайс-лист, «пишите по "
+    "вопросам аренды», «у нас в наличии», «работаем с 2015 года», подпись "
+    "компании, ник-витрина (например *_realty, *_rent_pattaya, *_shop). "
+    "Собственник, который сам сдаёт или продаёт СВОЮ квартиру, машину, вещь — "
+    "это частник, is_business=false. Сомневаешься — false.\n"
     "Верни СТРОГО JSON: "
-    '{"is_listing": bool, "category": "slug", "price_thb": number|null}'
+    '{"is_listing": bool, "category": "slug", "price_thb": number|null, '
+    '"is_business": bool}'
 )
 
 
@@ -83,14 +97,22 @@ def _extract_json(text: str) -> dict:
     return json.loads(m.group(0))
 
 
+SELLER_PRIVATE = "частник"
+SELLER_BUSINESS = "бизнес"
+
+
 def classify(text: str) -> dict:
     """
-    Возвращает {'is_listing': bool, 'category': slug, 'price_thb': int|None}.
-    При сбое ИИ — помечает как «other», чтобы не потерять пост (fail-safe).
+    Возвращает {'is_listing': bool, 'category': slug, 'price_thb': int|None,
+                'is_business': bool, 'seller_type': 'частник'|'бизнес'}.
+    При сбое ИИ — помечает как «other», чтобы не потерять пост (fail-safe);
+    тип продавца в этом случае считаем частником (осторожная сторона: строка
+    останется в основной таблице, а не уедет на вкладку агентств).
     """
     text = (text or "").strip()
     if not text:
-        return {"is_listing": False, "category": "other", "price_thb": None}
+        return {"is_listing": False, "category": "other", "price_thb": None,
+                "is_business": False, "seller_type": SELLER_PRIVATE}
 
     try:
         resp = _get_client().messages.create(
@@ -102,7 +124,8 @@ def classify(text: str) -> dict:
         data = _extract_json(resp.content[0].text)
     except Exception as e:  # noqa: BLE001 — любой сбой не должен ронять прогон
         print(f"  ⚠ ИИ не разобрал пост ({e}); помечаю other")
-        return {"is_listing": True, "category": "other", "price_thb": None}
+        return {"is_listing": True, "category": "other", "price_thb": None,
+                "is_business": False, "seller_type": SELLER_PRIVATE}
 
     cat = data.get("category")
     if cat not in ALL_CATEGORIES:
@@ -113,8 +136,11 @@ def classify(text: str) -> dict:
             price = int(round(float(price)))
         except (TypeError, ValueError):
             price = None
+    is_business = bool(data.get("is_business", False))
     return {
         "is_listing": bool(data.get("is_listing", False)),
         "category": cat,
         "price_thb": price,
+        "is_business": is_business,
+        "seller_type": SELLER_BUSINESS if is_business else SELLER_PRIVATE,
     }

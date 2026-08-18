@@ -1,49 +1,108 @@
 /**
- * Скрипт-приёмник для Google-таблицы «Фаранг — Разведка рынка» (режим CRM).
+ * Скрипт-приёмник для Google-таблицы «Фаранг — Разведка рынка»
+ * (режим мини-CRM «Присутствие», редакция 17.08.2026).
  *
- * НОВОЕ (CRM для обзвона): все авторы со ВСЕХ каналов сводятся в ОДНУ вкладку
- * «CRM». Один ник = одна строка НАВСЕГДА (дедуп по нику). У каждой строки есть
- * колонка «Написали?» (выпадашка Да / Нет / Премиум / Не доставлено, по
- * умолчанию «Нет»). Строка красится сама: «Да» — зелёная, «Премиум» — жёлтая
- * (человек принимает письма только от Premium-аккаунтов, пишем вручную),
- * «Не доставлено» — серая (личка закрыта, ник исчез). Так таблица становится общим списком для
- * ручного обзвона агентами И одновременно источником правды для авто-рассылки
- * (outreach.py): бот перед письмом спрашивает статус, а после отправки сам
- * ставит «Да» — значит один человек не получит два обращения.
+ * ЧТО ИЗМЕНИЛОСЬ ПРОТИВ ПРОШЛОЙ ВЕРСИИ (коротко, для человека):
+ *   1. СТРОКА = ОБЪЯВЛЕНИЕ, а не человек. Раньше один ник давал одну строку
+ *      навсегда, из-за чего таблица почти перестала расти. Теперь у продавца
+ *      столько строк, сколько у него объявлений. Дубли отсекаем по ССЫЛКЕ на
+ *      пост (одна ссылка = одна строка), а повторную публикацию того же текста
+ *      отсеивает раньше сам парсер (dedup.py).
+ *   2. Объявления БЕЗ НИКА тоже записываются — как рыночные данные (цены,
+ *      спрос). Написать им некому, в рассылку они не идут.
+ *   3. Новые колонки: «Присутствие», «Нет на сайте», «Тип продавца».
+ *   4. Новая вкладка «Недвижимость — агентства»: туда уходят объявления, где
+ *      тип продавца = бизнес И категория = недвижимость. Колонки и правила —
+ *      те же самые, отличается только лист.
+ *   5. Статус «на человека»: «Написали?» и «Присутствие» проставляются СРАЗУ
+ *      ВСЕМ строкам одного ника, а новая строка уже написанного человека
+ *      рождается с «Да» — второго письма он не получит.
+ *
+ * КТО КАКОЙ КОЛОНКОЙ УПРАВЛЯЕТ (решение Савелия 16.08.2026):
+ *   «Написали?»    — ТОЛЬКО бот-рассыльщик (outreach.py). Он же по ней решает,
+ *                    писать человеку или нет: пишем, только если «Нет».
+ *                    Значения: Нет / Да / Премиум / Не доставлено.
+ *   «Присутствие»  — воронка продавца. Бот её НЕ читает и НЕ трогает. Ставит
+ *                    сайт (этапы 3–4 плана) и Савелий руками («отказ»).
+ *                    Значения: пусто / нет ответа / согласен / зарегистрирован / отказ.
+ *   «Нет на сайте» — этап 4: бот не смог опубликовать объявление «согласного».
+ *                    Заполняется красным; пустая ячейка = всё в порядке.
+ *   «Тип продавца» — частник / бизнес, ставит ИИ при разборе поста.
  *
  * Действия (что умеет скрипт):
- *   POST {action:"append", rows:[{author,link,channel,category,date,snippet}]}
- *        — дописать новых авторов в CRM (дубли по нику отсекаются здесь же);
- *   POST {action:"mark", author:"ник", value:"Да"} — поставить автору статус
- *        («Да» по умолчанию; ещё «Премиум» и «Не доставлено»);
- *   GET  ?action=statuses                 — отдать карту {ник: статус};
- *   GET                                   — проверка «живой ли» (alive).
+ *   POST {action:"append", rows:[{author,link,channel,category,category_slug,
+ *         date,snippet,seller_type}]} — дописать объявления (дубли по ссылке
+ *         отсекаются здесь же, вкладка выбирается автоматически);
+ *   POST {action:"mark", author:"ник", value:"Да"} — статус в «Написали?»
+ *         ВСЕМ строкам этого ника («Да» по умолчанию; ещё «Премиум»,
+ *         «Не доставлено», «Нет»);
+ *   POST {action:"presence", author:"ник", value:"согласен"} — статус в
+ *         «Присутствие» всем строкам ника (задел под этапы 3–4);
+ *   POST {action:"nosite", link:"https://t.me/…", value:"Нет на сайте"} —
+ *         пометка конкретному объявлению (задел под этап 4);
+ *   GET  ?action=statuses — отдать карту {ник: статус «Написали?»};
+ *   GET                   — проверка «живой ли» (alive).
  * Во всех запросах обязателен общий пароль-токен (token), кроме простого alive.
  *
- * РАЗОВАЯ МИГРАЦИЯ старого формата: функция migrateBacklog() (запустить кнопкой
- * ▶ Run прямо в редакторе Apps Script) — сольёт существующие повкладочные строки
- * в «CRM» (дедуп по нику, всем «Нет»), а старые вкладки переименует в «архив_…».
+ * РАЗОВЫЕ МИГРАЦИИ (запускать кнопкой ▶ Run прямо в редакторе Apps Script):
+ *   migrateAddColumns()  — ГЛАВНАЯ для этой версии: дописывает три новые
+ *      колонки в существующую вкладку CRM, создаёт вкладку агентств и
+ *      заполняет «Присутствие» у тех, кому уже писали («Да» → «нет ответа»).
+ *      Данные не теряются, запускать можно повторно — лишнего не сделает.
+ *   migrateBacklog()     — старая, для перехода с повкладочного формата.
  *
  * Как обновить (после правок этого файла):
  *   1. Таблица → «Расширения» → «Apps Script» → заменить весь код этим файлом.
  *   2. Вписать TOKEN ниже (тот же, что в .env → SHEET_TOKEN).
  *   3. Сохранить (дискета) → «Развернуть» → «Управление развёртываниями» →
  *      карандаш → «Версия: Создать» → «Развернуть». URL (…/exec) НЕ меняется.
+ *   4. Выбрать в списке функций migrateAddColumns → ▶ Run (один раз).
  */
 var TOKEN = 'PASTE_YOUR_TOKEN_HERE'; // тот же, что в .env (SHEET_TOKEN)
 
 var CRM_TAB = 'CRM';
-var HEADER = ['Ник', 'Ссылка', 'Канал', 'Категория', 'Дата', 'Описание', 'Написали?'];
-var NICK_COL = 1;      // колонка «Ник» (A)
-var WRITTEN_COL = 7;   // колонка «Написали?» (G)
+var AGENCY_TAB = 'Недвижимость — агентства';
+
+var HEADER = ['Ник', 'Ссылка', 'Канал', 'Категория', 'Дата', 'Описание',
+              'Написали?', 'Присутствие', 'Нет на сайте', 'Тип продавца'];
+var NICK_COL = 1;       // A — ник автора (может быть пустым)
+var LINK_COL = 2;       // B — ссылка на пост (ключ дубля)
+var WRITTEN_COL = 7;    // G — «Написали?» (управляет бот-рассыльщик)
+var PRESENCE_COL = 8;   // H — «Присутствие» (воронка; бот не трогает)
+var NOSITE_COL = 9;     // I — «Нет на сайте» (этап 4)
+var SELLER_COL = 10;    // J — «Тип продавца» (ставит ИИ)
+
+// ── значения колонки «Написали?» ──
 var ST_DONE = 'Да';
 var ST_TODO = 'Нет';
 var ST_PREMIUM = 'Премиум';             // пишут только Premium — вручную
 var ST_UNDELIVERABLE = 'Не доставлено'; // личка закрыта, ник исчез
 var STATUSES = [ST_DONE, ST_TODO, ST_PREMIUM, ST_UNDELIVERABLE];
-var GREEN = '#b7e1cd';  // фон строки при «Да»
-var YELLOW = '#ffe599'; // фон строки при «Премиум»
-var GREY = '#d9d9d9';   // фон строки при «Не доставлено»
+
+// ── значения колонки «Присутствие» (пусто = ещё не трогали) ──
+var PR_NO_ANSWER = 'нет ответа';
+var PR_AGREED = 'согласен';
+var PR_REGISTERED = 'зарегистрирован';
+var PR_REFUSED = 'отказ';
+var PRESENCES = [PR_NO_ANSWER, PR_AGREED, PR_REGISTERED, PR_REFUSED];
+
+// ── значения колонки «Тип продавца» ──
+var SELLER_PRIVATE = 'частник';
+var SELLER_BUSINESS = 'бизнес';
+var SELLERS = [SELLER_PRIVATE, SELLER_BUSINESS];
+
+var NOSITE_MARK = 'Нет на сайте';
+var REALTY_SLUG = 'realty'; // категория недвижимости (см. categories.py)
+
+// ── цвета ──
+var GREEN = '#b7e1cd';   // строка целиком: «Написали?» = Да
+var YELLOW = '#ffe599';  // строка целиком: «Премиум»
+var GREY = '#d9d9d9';    // строка целиком: «Не доставлено»
+var PR_YELLOW = '#fff2cc'; // ячейка «Присутствие»: нет ответа
+var PR_GREEN = '#a8d08d';  // ячейка «Присутствие»: согласен
+var PR_BLUE = '#9fc5e8';   // ячейка «Присутствие»: зарегистрирован
+var PR_RED = '#f4cccc';    // ячейка «Присутствие»: отказ
+var RED = '#e06666';       // ячейка «Нет на сайте»
 
 // ─────────────────────────── ПРИЁМ (POST) ───────────────────────────
 function doPost(e) {
@@ -53,11 +112,24 @@ function doPost(e) {
       return _json({ ok: false, error: 'bad token' });
     }
     var action = String(body.action || 'append');
-    var sh = _ensureCrmSheet();
+    var tabs = _ensureTabs();
 
     if (action === 'mark') {
-      var found = _markWritten(sh, body.author, body.value);
+      var found = _setForNick(tabs, body.author, WRITTEN_COL,
+                              _safeStatus(body.value));
       return _json({ ok: true, found: found });
+    }
+
+    if (action === 'presence') {
+      var foundP = _setForNick(tabs, body.author, PRESENCE_COL,
+                               _safePresence(body.value));
+      return _json({ ok: true, found: foundP });
+    }
+
+    if (action === 'nosite') {
+      var value = (body.value === '' || body.value === null) ? '' : NOSITE_MARK;
+      var foundN = _setForLink(tabs, body.link, NOSITE_COL, value);
+      return _json({ ok: true, found: foundN });
     }
 
     // action === 'append' (по умолчанию)
@@ -65,10 +137,11 @@ function doPost(e) {
     if (!rows) {
       rows = [{
         author: body.author, link: body.link, channel: body.channel,
-        category: body.category, date: body.date, snippet: body.snippet,
+        category: body.category, category_slug: body.category_slug,
+        date: body.date, snippet: body.snippet, seller_type: body.seller_type,
       }];
     }
-    var written = _appendDedup(sh, rows);
+    var written = _appendDedup(tabs, rows);
     return _json({ ok: true, written: written });
   } catch (err) {
     return _json({ ok: false, error: String(err) });
@@ -84,147 +157,331 @@ function doGet(e) {
     if (params.token !== TOKEN) {
       return _json({ ok: false, error: 'bad token' });
     }
-    var sh = _ensureCrmSheet();
-    return _json({ ok: true, statuses: _readStatuses(sh) });
+    return _json({ ok: true, statuses: _readStatuses(_ensureTabs()) });
   }
 
   return _json({ ok: true, alive: true });
 }
 
-// ─────────────────────────── ЯДРО CRM ───────────────────────────
-/** Возвращает вкладку CRM, создавая её (с шапкой, дропдауном и подсветкой) при
- *  первом обращении. */
-function _ensureCrmSheet() {
+// ─────────────────────────── ВКЛАДКИ ───────────────────────────
+/** Обе рабочие вкладки: основная CRM и «Недвижимость — агентства».
+ *  Создаёт их при первом обращении (шапка, дропдауны, подсветка). */
+function _ensureTabs() {
+  return {
+    crm: _ensureSheet(CRM_TAB, 0),
+    agency: _ensureSheet(AGENCY_TAB, 1),
+  };
+}
+
+function _ensureSheet(name, position) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var sh = ss.getSheetByName(CRM_TAB);
+  var sh = ss.getSheetByName(name);
   if (!sh) {
-    sh = ss.insertSheet(CRM_TAB, 0); // первой вкладкой
+    sh = ss.insertSheet(name, position);
     sh.appendRow(HEADER);
     sh.setFrozenRows(1);
   } else if (sh.getLastColumn() === 0) {
     sh.appendRow(HEADER);
     sh.setFrozenRows(1);
   }
+  _ensureWidth(sh);
+  _ensureHeader(sh);
   _ensureValidation(sh);
   _ensureColorRules(sh);
   return sh;
 }
 
-/** Выпадашка Да / Нет / Премиум / Не доставлено на всю колонку «Написали?». */
-function _ensureValidation(sh) {
-  var rule = SpreadsheetApp.newDataValidation()
-    .requireValueInList(STATUSES, true)
-    .setAllowInvalid(false)
-    .build();
-  var maxRows = sh.getMaxRows();
-  if (maxRows >= 2) {
-    sh.getRange(2, WRITTEN_COL, maxRows - 1, 1).setDataValidation(rule);
+/** Лист должен вмещать все наши колонки (у старых вкладок их было 7). */
+function _ensureWidth(sh) {
+  var need = HEADER.length;
+  if (sh.getMaxColumns() < need) {
+    sh.insertColumnsAfter(sh.getMaxColumns(), need - sh.getMaxColumns());
   }
 }
 
-/** Условное форматирование: вся строка красится по статусу —
- *  «Да» зелёная, «Премиум» жёлтая, «Не доставлено» серая. */
+/** Дописывает недостающие заголовки, не трогая уже существующие. */
+function _ensureHeader(sh) {
+  var cur = sh.getRange(1, 1, 1, HEADER.length).getValues()[0];
+  var changed = false;
+  for (var i = 0; i < HEADER.length; i++) {
+    if (String(cur[i] || '').trim() === '') { cur[i] = HEADER[i]; changed = true; }
+  }
+  if (changed) {
+    sh.getRange(1, 1, 1, HEADER.length).setValues([cur]);
+    sh.setFrozenRows(1);
+  }
+}
+
+/** Выпадашки: «Написали?», «Присутствие», «Тип продавца». */
+function _ensureValidation(sh) {
+  var maxRows = sh.getMaxRows();
+  if (maxRows < 2) return;
+  var n = maxRows - 1;
+  sh.getRange(2, WRITTEN_COL, n, 1).setDataValidation(_listRule(STATUSES, false));
+  // «Присутствие» и «Тип продавца» — allowInvalid=true: пустая ячейка это
+  // нормальное состояние, ругаться на неё не нужно.
+  sh.getRange(2, PRESENCE_COL, n, 1).setDataValidation(_listRule(PRESENCES, true));
+  sh.getRange(2, SELLER_COL, n, 1).setDataValidation(_listRule(SELLERS, true));
+}
+
+function _listRule(values, allowInvalid) {
+  return SpreadsheetApp.newDataValidation()
+    .requireValueInList(values, true)
+    .setAllowInvalid(allowInvalid)
+    .build();
+}
+
+/**
+ * Подсветка. Порядок важен: Google применяет ПЕРВОЕ подошедшее правило,
+ * поэтому сначала идут точечные правила по отдельным ячейкам («Присутствие»,
+ * «Нет на сайте»), и только потом — заливка всей строки по «Написали?».
+ * Иначе строка перекрасила бы ячейку воронки и её не было бы видно.
+ */
 function _ensureColorRules(sh) {
-  var rng = sh.getRange(2, 1, Math.max(1, sh.getMaxRows() - 1), HEADER.length);
-  var pairs = [
-    [ST_DONE, GREEN], [ST_PREMIUM, YELLOW], [ST_UNDELIVERABLE, GREY],
-  ];
+  var rows = Math.max(1, sh.getMaxRows() - 1);
+  var presenceRng = sh.getRange(2, PRESENCE_COL, rows, 1);
+  var nositeRng = sh.getRange(2, NOSITE_COL, rows, 1);
+  var rowRng = sh.getRange(2, 1, rows, HEADER.length);
   var rules = [];
-  for (var i = 0; i < pairs.length; i++) {
+
+  var prPairs = [
+    [PR_NO_ANSWER, PR_YELLOW], [PR_AGREED, PR_GREEN],
+    [PR_REGISTERED, PR_BLUE], [PR_REFUSED, PR_RED],
+  ];
+  for (var i = 0; i < prPairs.length; i++) {
     rules.push(SpreadsheetApp.newConditionalFormatRule()
-      .whenFormulaSatisfied('=$G2="' + pairs[i][0] + '"')
-      .setBackground(pairs[i][1])
-      .setRanges([rng])
+      .whenFormulaSatisfied('=$H2="' + prPairs[i][0] + '"')
+      .setBackground(prPairs[i][1])
+      .setRanges([presenceRng])
       .build());
   }
+
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenFormulaSatisfied('=LEN($I2)>0')
+    .setBackground(RED)
+    .setFontColor('#ffffff')
+    .setRanges([nositeRng])
+    .build());
+
+  var stPairs = [[ST_DONE, GREEN], [ST_PREMIUM, YELLOW], [ST_UNDELIVERABLE, GREY]];
+  for (var j = 0; j < stPairs.length; j++) {
+    rules.push(SpreadsheetApp.newConditionalFormatRule()
+      .whenFormulaSatisfied('=$G2="' + stPairs[j][0] + '"')
+      .setBackground(stPairs[j][1])
+      .setRanges([rowRng])
+      .build());
+  }
+
   sh.setConditionalFormatRules(rules);
 }
 
+// ─────────────────────────── ЯДРО ───────────────────────────
 /** Нормализованный ник: без @, нижний регистр, без пробелов по краям. */
 function _normNick(v) {
   return String(v == null ? '' : v).replace(/^@+/, '').trim().toLowerCase();
 }
 
-/** Множество ников, которые уже есть в CRM (для дедупа). */
-function _existingNicks(sh) {
-  var last = sh.getLastRow();
-  var set = {};
-  if (last < 2) return set;
-  var col = sh.getRange(2, NICK_COL, last - 1, 1).getValues();
-  for (var i = 0; i < col.length; i++) {
-    var n = _normNick(col[i][0]);
-    if (n) set[n] = true;
-  }
-  return set;
+/** Нормализованная ссылка (ключ дубля объявления). */
+function _normLink(v) {
+  return String(v == null ? '' : v).trim().toLowerCase().replace(/\/+$/, '');
 }
 
-/** Дописывает новых авторов, отсекая дубли по нику (уже в таблице ИЛИ в этой же
- *  пачке). Возвращает число реально добавленных строк. «Написали?»=Нет. */
-function _appendDedup(sh, rows) {
-  var seen = _existingNicks(sh);
-  var values = [];
+function _safeStatus(v) {
+  var s = String(v == null ? '' : v).trim();
+  return STATUSES.indexOf(s) === -1 ? ST_DONE : s;
+}
+
+function _safePresence(v) {
+  var s = String(v == null ? '' : v).trim().toLowerCase();
+  if (s === '') return '';
+  return PRESENCES.indexOf(s) === -1 ? '' : s;
+}
+
+function _safeSeller(v) {
+  var s = String(v == null ? '' : v).trim().toLowerCase();
+  return SELLERS.indexOf(s) === -1 ? '' : s;
+}
+
+/** Читает лист один раз и отдаёт: ссылки (для дедупа) и статусы по никам. */
+function _scan(sh, links, byNick) {
+  var last = sh.getLastRow();
+  if (last < 2) return;
+  var vals = sh.getRange(2, 1, last - 1, PRESENCE_COL).getValues();
+  for (var i = 0; i < vals.length; i++) {
+    var link = _normLink(vals[i][LINK_COL - 1]);
+    if (link) links[link] = true;
+    var nick = _normNick(vals[i][NICK_COL - 1]);
+    if (!nick) continue;
+    var written = String(vals[i][WRITTEN_COL - 1] || '').trim();
+    var presence = String(vals[i][PRESENCE_COL - 1] || '').trim().toLowerCase();
+    var cur = byNick[nick] || { written: ST_TODO, presence: '' };
+    // «Сильный» статус побеждает: если человеку уже писали хоть по одной
+    // строке, новая строка не должна вернуть его в очередь на письмо.
+    if (written && written !== ST_TODO) cur.written = written;
+    if (presence) cur.presence = presence;
+    byNick[nick] = cur;
+  }
+}
+
+/** На какую вкладку кладём объявление: агентства недвижимости — отдельно. */
+function _pickTab(row) {
+  var slug = String(row.category_slug || '').trim().toLowerCase();
+  var seller = _safeSeller(row.seller_type);
+  if (slug === REALTY_SLUG && seller === SELLER_BUSINESS) return AGENCY_TAB;
+  return CRM_TAB;
+}
+
+/**
+ * Дописывает объявления. Дубль = ТА ЖЕ ССЫЛКА (уже в таблице или в этой же
+ * пачке). Объявления без ника записываем — это рыночные данные.
+ * Новая строка наследует «Написали?» и «Присутствие» своего ника.
+ * Возвращает число реально добавленных строк.
+ */
+function _appendDedup(tabs, rows) {
+  var links = {};
+  var byNick = {};
+  _scan(tabs.crm, links, byNick);
+  _scan(tabs.agency, links, byNick);
+
+  var buckets = {};
+  buckets[CRM_TAB] = [];
+  buckets[AGENCY_TAB] = [];
+  var total = 0;
+
   for (var i = 0; i < rows.length; i++) {
     var r = rows[i];
+    var link = _normLink(r.link);
+    if (!link || links[link]) continue; // без ссылки или дубль — пропускаем
+    links[link] = true;
+
     var nick = _normNick(r.author);
-    if (!nick || seen[nick]) continue; // без ника или дубль — пропускаем
-    seen[nick] = true;
-    values.push([
-      r.author || '', r.link || '', r.channel || '',
-      r.category || '', r.date || '', r.snippet || '', ST_TODO,
+    var st = (nick && byNick[nick]) ? byNick[nick] : { written: ST_TODO, presence: '' };
+
+    buckets[_pickTab(r)].push([
+      r.author || '', r.link || '', r.channel || '', r.category || '',
+      r.date || '', r.snippet || '', st.written, st.presence, '',
+      _safeSeller(r.seller_type),
     ]);
+    total++;
   }
-  if (values.length === 0) return 0;
+
+  _writeBucket(tabs.crm, buckets[CRM_TAB]);
+  _writeBucket(tabs.agency, buckets[AGENCY_TAB]);
+  return total;
+}
+
+function _writeBucket(sh, values) {
+  if (!values || values.length === 0) return;
   var startRow = sh.getLastRow() + 1;
   sh.getRange(startRow, 1, values.length, HEADER.length).setValues(values);
   _ensureValidation(sh);
   _ensureColorRules(sh);
-  return values.length;
 }
 
-/** Ставит автору статус в «Написали?» (по нику): «Да» (по умолчанию),
- *  «Премиум» или «Не доставлено». Возвращает true, если нашли строку. */
-function _markWritten(sh, author, value) {
+/** Ставит значение в колонку ВСЕМ строкам одного ника (обе вкладки).
+ *  Возвращает, сколько строк поправили. */
+function _setForNick(tabs, author, col, value) {
   var target = _normNick(author);
-  if (!target) return false;
-  var status = String(value || ST_DONE);
-  if (STATUSES.indexOf(status) === -1) status = ST_DONE;
-  var last = sh.getLastRow();
-  if (last < 2) return false;
-  var nicks = sh.getRange(2, NICK_COL, last - 1, 1).getValues();
-  for (var i = 0; i < nicks.length; i++) {
-    if (_normNick(nicks[i][0]) === target) {
-      sh.getRange(i + 2, WRITTEN_COL).setValue(status);
-      return true;
-    }
-  }
-  return false;
+  if (!target) return 0;
+  return _setWhere(tabs, NICK_COL, _normNick, target, col, value);
 }
 
-/** Карта {ник: статус} по всей CRM (для outreach.py). */
-function _readStatuses(sh) {
+/** Ставит значение в колонку строке с конкретной ссылкой (обе вкладки). */
+function _setForLink(tabs, link, col, value) {
+  var target = _normLink(link);
+  if (!target) return 0;
+  return _setWhere(tabs, LINK_COL, _normLink, target, col, value);
+}
+
+function _setWhere(tabs, keyCol, normFn, target, col, value) {
+  var sheets = [tabs.crm, tabs.agency];
+  var touched = 0;
+  for (var s = 0; s < sheets.length; s++) {
+    var sh = sheets[s];
+    var last = sh.getLastRow();
+    if (last < 2) continue;
+    var keys = sh.getRange(2, keyCol, last - 1, 1).getValues();
+    var target_ = sh.getRange(2, col, last - 1, 1);
+    var cur = target_.getValues();
+    var changed = false;
+    for (var i = 0; i < keys.length; i++) {
+      if (normFn(keys[i][0]) === target && String(cur[i][0]) !== String(value)) {
+        cur[i][0] = value;
+        changed = true;
+        touched++;
+      }
+    }
+    if (changed) target_.setValues(cur);
+  }
+  return touched;
+}
+
+/** Карта {ник: статус «Написали?»} по обеим вкладкам (для outreach.py).
+ *  У человека много строк — берём «сильный» статус (любой, кроме «Нет»). */
+function _readStatuses(tabs) {
+  var links = {};
+  var byNick = {};
+  _scan(tabs.crm, links, byNick);
+  _scan(tabs.agency, links, byNick);
   var out = {};
-  var last = sh.getLastRow();
-  if (last < 2) return out;
-  var vals = sh.getRange(2, 1, last - 1, HEADER.length).getValues();
-  for (var i = 0; i < vals.length; i++) {
-    var n = _normNick(vals[i][NICK_COL - 1]);
-    if (!n) continue;
-    var st = String(vals[i][WRITTEN_COL - 1] || '').trim();
-    out[n] = (STATUSES.indexOf(st) === -1) ? ST_TODO : st;
+  for (var nick in byNick) {
+    if (!byNick.hasOwnProperty(nick)) continue;
+    var st = byNick[nick].written;
+    out[nick] = (STATUSES.indexOf(st) === -1) ? ST_TODO : st;
   }
   return out;
 }
 
-// ─────────────── РАЗОВАЯ МИГРАЦИЯ БЭКЛОГА (запуск кнопкой ▶) ───────────────
+// ─────────── МИГРАЦИЯ ПОД НОВЫЕ КОЛОНКИ (запуск кнопкой ▶) ───────────
 /**
- * Сливает старые повкладочные строки в «CRM» (дедуп по нику, всем «Нет») и
- * переименовывает старые вкладки в «архив_…». Старый формат вкладки:
+ * Готовит существующую таблицу к режиму мини-CRM:
+ *   - расширяет вкладку CRM до 10 колонок и дописывает новые заголовки;
+ *   - создаёт вкладку «Недвижимость — агентства» с той же шапкой;
+ *   - у строк, где «Написали?» = «Да», проставляет «Присутствие» = «нет ответа»
+ *     (мы написали, ответа не было) — чтобы воронка не начиналась с чистого
+ *     листа. Остальным «Присутствие» остаётся пустым.
+ * Ничего не удаляет. Запускать можно повторно — лишнего не сделает.
+ */
+function migrateAddColumns() {
+  var tabs = _ensureTabs();
+  var filled = 0;
+  var sheets = [tabs.crm, tabs.agency];
+  for (var s = 0; s < sheets.length; s++) {
+    var sh = sheets[s];
+    var last = sh.getLastRow();
+    if (last < 2) continue;
+    var written = sh.getRange(2, WRITTEN_COL, last - 1, 1).getValues();
+    var presRng = sh.getRange(2, PRESENCE_COL, last - 1, 1);
+    var pres = presRng.getValues();
+    var changed = false;
+    for (var i = 0; i < written.length; i++) {
+      var cur = String(pres[i][0] || '').trim();
+      if (cur) continue; // уже заполнено руками — не трогаем
+      if (String(written[i][0] || '').trim() === ST_DONE) {
+        pres[i][0] = PR_NO_ANSWER;
+        filled++;
+        changed = true;
+      }
+    }
+    if (changed) presRng.setValues(pres);
+  }
+  SpreadsheetApp.getActive().toast(
+    'Готово. Колонки на месте, вкладка агентств создана. ' +
+    '«Присутствие» = «нет ответа» проставлено строкам: ' + filled,
+    'мини-CRM «Присутствие»', 10);
+  return { filled: filled };
+}
+
+// ─────────────── СТАРАЯ МИГРАЦИЯ БЭКЛОГА (запуск кнопкой ▶) ───────────────
+/**
+ * Сливает старые повкладочные строки в «CRM» и переименовывает старые вкладки
+ * в «архив_…». Старый формат вкладки:
  *   Дата | Категория | Цена (฿) | Ссылка | Автор (ник) | Краткое описание
- * Запускать ОДИН раз из редактора Apps Script (выбрать migrateBacklog → ▶ Run).
+ * Нужна была ОДИН раз при переходе на CRM; оставлена для истории.
  */
 function migrateBacklog() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var crm = _ensureCrmSheet();
+  var tabs = _ensureTabs();
   var sheets = ss.getSheets();
   var collected = [];
   var toArchive = [];
@@ -232,7 +489,7 @@ function migrateBacklog() {
   for (var s = 0; s < sheets.length; s++) {
     var sh = sheets[s];
     var name = sh.getName();
-    if (name === CRM_TAB) continue;
+    if (name === CRM_TAB || name === AGENCY_TAB) continue;
     if (name.indexOf('архив_') === 0) continue; // уже в архиве
     var last = sh.getLastRow();
     if (last >= 2) {
@@ -249,14 +506,13 @@ function migrateBacklog() {
     toArchive.push(sh);
   }
 
-  var added = _appendDedup(crm, collected); // дедуп по нику сделает сам
+  var added = _appendDedup(tabs, collected);
   for (var a = 0; a < toArchive.length; a++) {
     var old = toArchive[a];
-    var newName = 'архив_' + old.getName();
-    try { old.setName(newName); } catch (err) { /* имя занято — оставляем */ }
+    try { old.setName('архив_' + old.getName()); } catch (err) { /* имя занято */ }
   }
   SpreadsheetApp.getActive().toast(
-    'Миграция: перенесено ' + added + ' авторов, архивировано вкладок: ' + toArchive.length,
+    'Миграция: перенесено строк ' + added + ', архивировано вкладок: ' + toArchive.length,
     'CRM', 10);
   return { added: added, archived: toArchive.length };
 }

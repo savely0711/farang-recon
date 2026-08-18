@@ -5,12 +5,22 @@
   - заходит техническим аккаунтом (сессия из .env, без ввода кода);
   - по каждому каналу из channels.py читает НОВЫЕ посты
     (первый заход — за последнюю неделю, дальше — что появилось со вчера);
-  - каждый пост разбирает ИИ: объявление ли это, категория, цена;
+  - каждый пост разбирает ИИ: объявление ли это, категория, цена, частник или
+    бизнес (тип продавца);
   - у объявления берёт НИК автора поста (без прочих данных — правило 3);
-  - ПРОПУСКАЕТ дубли (тот же автор + похожий текст) — в таблицу не пишет
-    повторы и даже не тратит на них ИИ (см. dedup.py);
-  - объявления пишет в Google-таблицу ПАЧКАМИ (своя вкладка на канал);
+  - ПРОПУСКАЕТ повторы одного объявления (тот же автор + тот же текст) — в
+    таблицу не пишет копии и даже не тратит на них ИИ (см. dedup.py);
+  - объявления пишет в Google-таблицу ПАЧКАМИ;
   - запоминает, докуда дочитал (state.json), чтобы не дублировать.
+
+Мини-CRM «Присутствие» (17.08.2026) — что поменялось:
+  - СТРОКА = ОБЪЯВЛЕНИЕ, а не человек. Раньше действовало правило «один ник =
+    одна строка навсегда», и все следующие объявления продавца выбрасывались —
+    из-за этого таблица росла на одну строку в день. Теперь у продавца столько
+    строк, сколько у него объявлений; статусы всё равно остаются «на человека»
+    (их проставляет скрипт таблицы сразу всем строкам ника).
+  - Посты БЕЗ НИКА больше не выбрасываются: их записываем как рыночные данные
+    (цены, спрос). В очередь «первого касания» они не идут — писать некому.
 
 Надёжность (правка 29.06): если запись пачки в таблицу не удалась даже после
 повторов — НЕ роняем весь прогон. Прерываем только текущий канал (его дочитаем
@@ -115,7 +125,7 @@ async def process_channel(client, sheet, ch: dict, joins_left: list, persist: bo
     added = 0
     seen = 0
     skipped = 0
-    duped = 0                 # сколько повторов отсеяли (не тратя ИИ и таблицу)
+    duped = 0                 # сколько копий объявлений отсеяли (не тратя ИИ и таблицу)
     write_failed = False
     buffer = []               # копим объявления: список (msg_id, «сырое» объявление)
     pending = set()           # ключи дублей этого прогона (ещё не записанных на диск)
@@ -131,13 +141,16 @@ async def process_channel(client, sheet, ch: dict, joins_left: list, persist: bo
             written_id = max(written_id, max(mid for mid, _ in buffer))
             added += len(buffer)
             if persist:
-                # Запоминаем ТОЛЬКО реально записанных авторов (по нику),
-                # чтобы будущие посты того же человека не заводили вторую строку.
+                # Запоминаем ТОЛЬКО реально записанные объявления, чтобы та же
+                # публикация завтра не завела вторую строку. Ключ — автор (или
+                # канал, если ника нет) + текст поста; см. dedup.py.
                 for _, item in buffer:
-                    dedup.remember(item.get("author"))
+                    dedup.remember(item.get("author"), item["snippet"],
+                                   item.get("channel"))
                 dedup.save()
                 # Пункт 14: новые объявления с ником автора — в очередь
-                # «первого касания» (её разбирает outreach.py).
+                # «первого касания» (её разбирает outreach.py). Объявления без
+                # ника enqueue() отбросит сам — писать некому.
                 for _, item in buffer:
                     outreach_queue.enqueue(
                         item.get("author"), item["link"], item.get("date"))
@@ -154,16 +167,14 @@ async def process_channel(client, sheet, ch: dict, joins_left: list, persist: bo
             if not is_ad_candidate(text):
                 skipped += 1
                 continue
-            # Ник автора нужен и для таблицы, и для дедупа по нику.
+            # Ник автора нужен для рассылки и для ключа дубля. Его может не
+            # быть — такие объявления мы теперь ВСЁ РАВНО записываем (рыночные
+            # данные), просто в рассылку они не идут.
             author = await _author_username(msg)
-            # Пункт 3: постам без открытого ника писать некому — пропускаем ДО ИИ.
-            if not author:
-                skipped += 1
-                continue
-            # Дубль по НИКУ? Один ник = одна строка навсегда. Отсеиваем ДО ИИ —
-            # не тратим ни ИИ, ни строку в таблице (см. dedup.py).
-            key = dedup.make_key(author)
-            if dedup.is_dup(author) or key in pending:
+            # Повтор ТОГО ЖЕ объявления? Отсеиваем ДО ИИ — не тратим ни ИИ, ни
+            # строку в таблице. Ключ: автор (или канал, если ника нет) + текст.
+            key = dedup.make_key(author, text, ch["title"])
+            if key in pending or dedup.is_dup(author, text, ch["title"]):
                 duped += 1
                 continue
             seen += 1
@@ -180,6 +191,7 @@ async def process_channel(client, sheet, ch: dict, joins_left: list, persist: bo
                     "author": author,
                     "channel": ch["title"],
                     "snippet": text,
+                    "seller_type": result.get("seller_type", ""),
                 }))
                 # Дошли до потолка пачки — отправляем сразу.
                 if len(buffer) >= BATCH_SIZE and not flush():
@@ -202,7 +214,7 @@ async def process_channel(client, sheet, ch: dict, joins_left: list, persist: bo
 
     tail = " (запись прервалась — докуда успели; остальное в след. раз)" if write_failed else ""
     print(f"  ✅ объявлений записано: {added}; проверено ИИ: {seen}; "
-          f"повторов отсеяно: {duped}; пропущено болтовни: {skipped}; "
+          f"копий отсеяно: {duped}; пропущено болтовни: {skipped}; "
           f"докуда дочитал: {final_id}{tail}")
 
 
@@ -218,10 +230,11 @@ class DryRunSink:
         for l in listings:
             cat = ALL_CATEGORIES.get(l["category"], l["category"])
             author = l.get("author")
-            author_str = f"@{author}" if author else "—"
+            author_str = f"@{author}" if author else "без ника"
             chan = l.get("channel") or "—"
+            seller = l.get("seller_type") or "?"
             snip = (l["snippet"] or "").replace("\n", " ").strip()[:70]
-            print(f"    [CRM] {l['date']:%Y-%m-%d} | {chan} | {cat} | "
+            print(f"    [CRM] {l['date']:%Y-%m-%d} | {chan} | {cat} | {seller} | "
                   f"автор {author_str} | {l['link']}\n        «{snip}»")
         return True
 
