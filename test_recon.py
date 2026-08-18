@@ -104,6 +104,30 @@ check("сбой ИИ: пост не теряется и уезжает в осн
 r = classify.classify("")
 check("пустой текст — не объявление", r["is_listing"] is False and "seller_type" in r)
 
+# Разбор «грязных» ответов — в боевом логе такое реально встречалось
+d = classify._extract_json(
+    '{"is_listing": true, "category": "auto", "price_thb": 5000, "is_business": false}\n\n'
+    'Пояснение: {"почему": "продаёт свой байк"}')
+check("два JSON подряд: берём первый (раньше падало «Extra data»)",
+      d["category"] == "auto" and d["price_thb"] == 5000, str(d))
+
+d = classify._extract_json(
+    '```json\n{"is_listing": true, "category": "other", "price_thb": null, '
+    '"is_business": true}\n```')
+check("ответ в ```json``` разбирается", d["is_business"] is True, str(d))
+
+d = classify._extract_json(
+    'Вот разбор: {"is_listing": true, "category": "realty", '
+    '"price_thb": 20000, "is_business": false, "note": "цена {за месяц}"}')
+check("вложенные скобки внутри строки не ломают разбор",
+      d["category"] == "realty" and d["price_thb"] == 20000, str(d))
+
+try:
+    classify._extract_json("тут вообще нет ответа")
+    check("текст без JSON поднимает ошибку", False)
+except ValueError:
+    check("текст без JSON поднимает ошибку", True)
+
 # ─────────────── sheets.py ───────────────
 print("\n3. Подготовка строки для таблицы (sheets.py)")
 import sheets  # noqa: E402

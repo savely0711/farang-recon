@@ -90,11 +90,45 @@ _SYSTEM = (
 
 
 def _extract_json(text: str) -> dict:
-    """Достаём JSON даже если модель обернула его в текст/```."""
-    m = re.search(r"\{.*\}", text, re.DOTALL)
-    if not m:
-        raise ValueError(f"нет JSON в ответе ИИ: {text!r}")
-    return json.loads(m.group(0))
+    """Достаём JSON, даже если модель обернула его в текст, ``` или дописала
+    после ответа что-то ещё.
+
+    Почему не одной регуляркой (правка 17.08.2026): раньше здесь стояло
+    `\\{.*\\}` с жадным поиском — оно захватывало от ПЕРВОЙ скобки до ПОСЛЕДНЕЙ.
+    Стоило модели дописать второй объект или пример, и json.loads падал с
+    «Extra data», а пост уезжал в «other». В боевом логе такое встречалось по
+    несколько раз за прогон. Теперь идём по тексту и берём первый ПАРНЫЙ блок
+    скобок (кавычки и экранирование учитываем), а если он не разобрался —
+    пробуем следующий.
+    """
+    start = text.find("{")
+    while start != -1:
+        depth = 0
+        in_str = False
+        escaped = False
+        for i in range(start, len(text)):
+            ch = text[i]
+            if in_str:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(text[start:i + 1])
+                    except json.JSONDecodeError:
+                        break  # этот блок битый — поищем следующий
+        start = text.find("{", start + 1)
+    raise ValueError(f"нет JSON в ответе ИИ: {text!r}")
 
 
 SELLER_PRIVATE = "частник"
