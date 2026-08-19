@@ -85,12 +85,13 @@ var AGENCY_TAB = 'Недвижимость — агентства';
 var CONSENT_TAB = 'Согласия';   // реестр согласий (этап 3 плана мини-CRM)
 
 var HEADER = ['Ник', 'Ссылка', 'Канал', 'Категория', 'Дата', 'Описание',
-              'Написали?', 'Присутствие', 'Нет на сайте', 'Тип продавца'];
+              'Написали?', 'Присутствие', 'На сайте', 'Тип продавца'];
 var NICK_COL = 1;       // A — ник автора (может быть пустым)
 var LINK_COL = 2;       // B — ссылка на пост (ключ дубля)
 var WRITTEN_COL = 7;    // G — «Написали?» (управляет бот-рассыльщик)
 var PRESENCE_COL = 8;   // H — «Присутствие» (воронка; бот не трогает)
-var NOSITE_COL = 9;     // I — «Нет на сайте» (этап 4)
+var SITE_COL = 9;       // I — «На сайте» (этап 4: результат авто-подготовки)
+var NOSITE_COL = SITE_COL; // старое имя — чтобы не ломать прежние вызовы
 var SELLER_COL = 10;    // J — «Тип продавца» (ставит ИИ)
 
 // ── значения колонки «Написали?» ──
@@ -112,7 +113,11 @@ var SELLER_PRIVATE = 'частник';
 var SELLER_BUSINESS = 'бизнес';
 var SELLERS = [SELLER_PRIVATE, SELLER_BUSINESS];
 
-var NOSITE_MARK = 'Нет на сайте';
+// Результат авто-подготовки объявления (этап 4). Пусто = ещё не пробовали.
+var SITE_OK = 'Опубликовано';   // ушло на сайт, ждёт модератора
+var SITE_FAIL = 'Не вышло';     // не получилось (нет фото, не разобрана цена…)
+var SITE_VALUES = [SITE_OK, SITE_FAIL];
+var NOSITE_MARK = SITE_FAIL;    // старое имя
 var REALTY_SLUG = 'realty'; // категория недвижимости (см. categories.py)
 
 // ── РЕЕСТР СОГЛАСИЙ (вкладка «Согласия»), этап 3 плана мини-CRM ──
@@ -171,9 +176,8 @@ function doPost(e) {
                                body.status || body.value, body.reason));
     }
 
-    if (action === 'nosite') {
-      var value = (body.value === '' || body.value === null) ? '' : NOSITE_MARK;
-      var foundN = _setForLink(tabs, body.link, NOSITE_COL, value);
+    if (action === 'nosite' || action === 'site') {
+      var foundN = _setForLink(tabs, body.link, SITE_COL, _safeSite(body.value));
       return _json({ ok: true, found: foundN });
     }
 
@@ -217,7 +221,63 @@ function doGet(e) {
     return _json({ ok: true, consents: out });
   }
 
+  if (action === 'todo') {
+    if (params.token !== TOKEN) {
+      return _json({ ok: false, error: 'bad token' });
+    }
+    var limit = parseInt(params.limit, 10);
+    if (!limit || limit < 1) limit = 50;
+    var days = parseInt(params.days, 10);
+    if (!days || days < 1) days = 0; // 0 = без ограничения по возрасту
+    return _json({ ok: true, rows: _readTodo(_ensureTabs(), limit, days) });
+  }
+
   return _json({ ok: true, alive: true });
+}
+
+/**
+ * Очередь авто-подготовки (этап 4): объявления продавцов, давших согласие,
+ * которые мы ещё не пробовали выложить на сайт.
+ *
+ * Условия строки: есть ник, «Присутствие» = «согласен», колонка «На сайте»
+ * пуста. Сортировка — от свежих к старым (мы публикуем актуальное, а не
+ * позапрошлогоднее). `days` > 0 отсекает посты старше указанного числа дней.
+ */
+function _readTodo(tabs, limit, days) {
+  var sheets = [tabs.crm, tabs.agency];
+  var out = [];
+  var minTime = 0;
+  if (days > 0) minTime = new Date().getTime() - days * 24 * 60 * 60 * 1000;
+
+  for (var s = 0; s < sheets.length; s++) {
+    var sh = sheets[s];
+    var last = sh.getLastRow();
+    if (last < 2) continue;
+    var vals = sh.getRange(2, 1, last - 1, HEADER.length).getValues();
+    for (var i = 0; i < vals.length; i++) {
+      var row = vals[i];
+      var nick = _normNick(row[NICK_COL - 1]);
+      if (!nick) continue;
+      if (_safePresence(row[PRESENCE_COL - 1]) !== PR_AGREED) continue;
+      if (String(row[SITE_COL - 1] || '').trim() !== '') continue;
+      var link = String(row[LINK_COL - 1] || '').trim();
+      if (!link) continue;
+
+      var when = row[4]; // E — «Дата»
+      var time = 0;
+      if (when instanceof Date) time = when.getTime();
+      else if (when) {
+        var parsed = new Date(String(when).replace(' ', 'T'));
+        if (!isNaN(parsed.getTime())) time = parsed.getTime();
+      }
+      if (minTime && time && time < minTime) continue;
+
+      out.push({ nick: nick, link: link, time: time });
+    }
+  }
+
+  out.sort(function (a, b) { return b.time - a.time; });
+  return out.slice(0, limit);
 }
 
 // ─────────────────────────── ВКЛАДКИ ───────────────────────────
@@ -320,7 +380,12 @@ function _ensureHeader(sh) {
   var cur = sh.getRange(1, 1, 1, HEADER.length).getValues()[0];
   var changed = false;
   for (var i = 0; i < HEADER.length; i++) {
-    if (String(cur[i] || '').trim() === '') { cur[i] = HEADER[i]; changed = true; }
+    var was = String(cur[i] || '').trim();
+    if (was === '') { cur[i] = HEADER[i]; changed = true; }
+    // Переименование колонки I со старого названия (до этапа 4).
+    else if (i === SITE_COL - 1 && was === 'Нет на сайте') {
+      cur[i] = HEADER[i]; changed = true;
+    }
   }
   if (changed) {
     sh.getRange(1, 1, 1, HEADER.length).setValues([cur]);
@@ -338,6 +403,7 @@ function _ensureValidation(sh) {
   // нормальное состояние, ругаться на неё не нужно.
   sh.getRange(2, PRESENCE_COL, n, 1).setDataValidation(_listRule(PRESENCES, true));
   sh.getRange(2, SELLER_COL, n, 1).setDataValidation(_listRule(SELLERS, true));
+  sh.getRange(2, SITE_COL, n, 1).setDataValidation(_listRule(SITE_VALUES, true));
 }
 
 function _listRule(values, allowInvalid) {
@@ -372,6 +438,11 @@ function _ensureColorRules(sh) {
       .build());
   }
 
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenFormulaSatisfied('=$I2="' + SITE_OK + '"')
+    .setBackground(PR_GREEN)
+    .setRanges([nositeRng])
+    .build());
   rules.push(SpreadsheetApp.newConditionalFormatRule()
     .whenFormulaSatisfied('=LEN($I2)>0')
     .setBackground(RED)
@@ -411,6 +482,15 @@ function _safePresence(v) {
   var s = String(v == null ? '' : v).trim().toLowerCase();
   if (s === '') return '';
   return PRESENCES.indexOf(s) === -1 ? '' : s;
+}
+
+/** Значение колонки «На сайте»: только «Опубликовано», «Не вышло» или пусто. */
+function _safeSite(v) {
+  var s = String(v == null ? '' : v).trim();
+  if (s === '') return '';
+  if (s === SITE_OK || s === SITE_FAIL) return s;
+  // Любое другое непустое значение (в т.ч. старое «Нет на сайте») = неудача.
+  return SITE_FAIL;
 }
 
 function _safeSeller(v) {

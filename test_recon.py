@@ -166,6 +166,80 @@ q = outreach_queue.read_all()
 check("в рассылку попал только автор с ником", len(q) == 1 and q[0]["author"] == "ivan",
       json.dumps(q, ensure_ascii=False))
 
+# ─────────────── build.py (сборка карточки, этап 4) ───────────────
+print("\n5. Сборка карточки объявления (build.py)")
+os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
+import build  # noqa: E402
+
+
+class _FakeResp:
+    def __init__(self, text):
+        self.content = [types.SimpleNamespace(text=text)]
+
+
+def fake_ai(answer):
+    """Подменяет вызов ИИ заранее заданным ответом."""
+    client = types.SimpleNamespace(
+        messages=types.SimpleNamespace(create=lambda **kw: _FakeResp(answer))
+    )
+    build._client = client
+    return client
+
+
+fake_ai('{"ok": true, "title": "iPhone 13 128 ГБ", "description": "Состояние отличное.",'
+        ' "price_thb": 15000, "is_free": false, "is_negotiable": false,'
+        ' "category": "electronics"}')
+card = build.build_listing("Продам айфон 13, 15000 бат, пишите в личку @ivan")
+check("карточка собрана", card["ok"] and card["title"] == "iPhone 13 128 ГБ",
+      json.dumps(card, ensure_ascii=False))
+check("цена числом", card["price_thb"] == 15000 and not card["is_free"])
+
+fake_ai('{"ok": false}')
+check("не объявление — отказ", not build.build_listing("Кто знает хорошего врача?")["ok"])
+
+fake_ai('{"ok": true, "title": "Диван", "description": "", "price_thb": null,'
+        ' "is_free": false, "is_negotiable": false, "category": "furniture"}')
+check("без цены и без «даром» — не публикуем",
+      not build.build_listing("Отдам диван")["ok"])
+
+fake_ai('{"ok": true, "title": "Диван", "description": "", "price_thb": null,'
+        ' "is_free": true, "is_negotiable": false, "category": "furniture"}')
+free = build.build_listing("Отдам диван даром")
+check("«даром» проходит без цены", free["ok"] and free["is_free"] and free["price_thb"] is None)
+
+fake_ai('{"ok": true, "title": "Байк", "description": "", "price_thb": 500,'
+        ' "is_free": false, "is_negotiable": true, "category": "auto"}')
+both = build.build_listing("Сдам байк 500 бат, торг")
+check("цена сильнее «договорной»", both["price_thb"] == 500 and not both["is_negotiable"])
+
+fake_ai('{"ok": true, "title": "Что-то", "description": "", "price_thb": 100,'
+        ' "is_free": false, "is_negotiable": false, "category": "other"}')
+check("категория other на сайт не идёт", not build.build_listing("Всякое")["ok"])
+
+
+def boom(**kw):
+    raise RuntimeError("ИИ недоступен")
+
+
+build._client = types.SimpleNamespace(
+    messages=types.SimpleNamespace(create=boom)
+)
+check("сбой ИИ не роняет прогон", not build.build_listing("Продам стол")["ok"])
+
+# ─────────────── prepare.py (разбор ссылки) ───────────────
+print("\n6. Авто-подготовка (prepare.py)")
+import prepare  # noqa: E402
+
+m = prepare.LINK_RE.match("https://t.me/baraholka_pattaya/12345")
+check("ссылка на пост разбирается", bool(m) and m.group(1) == "baraholka_pattaya"
+      and m.group(2) == "12345")
+check("ссылка со слэшем на конце тоже",
+      bool(prepare.LINK_RE.match("https://t.me/g/7/")))
+check("чужая ссылка отбрасывается",
+      not prepare.LINK_RE.match("https://example.com/g/7"))
+check("приватная ссылка (t.me/c/...) не берётся",
+      not prepare.LINK_RE.match("https://t.me/c/1234567/89"))
+
 # ─────────────── итог ───────────────
 if FAILED:
     print(f"\n⛔ ПРОВАЛЕНО ПРОВЕРОК: {len(FAILED)}\n")

@@ -33,6 +33,9 @@ JSON-ключ (консоль Aeza ломает крупную вставку, �
     если письмо не ушло);
   - set_presence(author, value) — задел под этапы 3–4 (сайт сообщает «согласен»
     / «зарегистрирован»); рассылка этим методом не пользуется;
+  - read_todo() / set_site_result(link, value) — ОЧЕРЕДЬ АВТО-ПОДГОТОВКИ
+    (этап 4): какие объявления согласившихся ещё не выложены на сайт и чем
+    закончилась попытка. Колонка «На сайте»;
   - set_consent(nick, status, reason) / read_consents() — РЕЕСТР СОГЛАСИЙ
     (вкладка «Согласия», этап 3): одна строка на человека, единственный
     источник правды о согласии. Пополняет его сайт; разведке нужен только для
@@ -49,6 +52,11 @@ import httpx
 from categories import ALL_CATEGORIES
 
 CRM_TAB = "CRM"
+
+# Значения колонки «На сайте» (этап 4). Держим здесь, чтобы не расходились
+# с apps_script.gs — там ровно те же две строки.
+SITE_OK = "Опубликовано"
+SITE_FAIL = "Не вышло"
 
 # Сколько раз пробуем записать одну пачку, прежде чем сдаться (с паузами между).
 MAX_RETRIES = 3
@@ -176,13 +184,48 @@ class Sheet:
                     time.sleep(RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)])
         return None
 
-    def mark_no_site(self, link: str, value: str = "Нет на сайте") -> bool:
-        """Помечает конкретное объявление (по ссылке) как неопубликованное:
-        красная ячейка «Нет на сайте». Пустое значение снимает пометку.
-        ЗАДЕЛ ПОД ЭТАП 4 плана мини-CRM."""
-        payload = {"token": self._token, "action": "nosite",
+    def set_site_result(self, link: str, value: str) -> bool:
+        """Пишет РЕЗУЛЬТАТ авто-подготовки в колонку «На сайте» у одной строки
+        (ключ — ссылка на пост). Значения: SITE_OK «Опубликовано» (зелёным,
+        объявление ушло на сайт и ждёт модератора), SITE_FAIL «Не вышло»
+        (красным), пустая строка — снять пометку и вернуть объявление в очередь.
+
+        Помеченные строки в очередь `read_todo()` больше не попадают — это и
+        есть защита от повторной публикации на стороне таблицы (вторая, кроме
+        уникальной ссылки в базе сайта)."""
+        payload = {"token": self._token, "action": "site",
                    "link": link, "value": value}
         return self._post_retry(payload, note=f"«{value}» для {link}")
+
+    def mark_no_site(self, link: str, value: str = SITE_FAIL) -> bool:
+        """Старое имя `set_site_result` — оставлено, чтобы не ломать вызовы."""
+        return self.set_site_result(link, value)
+
+    def read_todo(self, limit: int = 50, days: int = 0):
+        """ОЧЕРЕДЬ АВТО-ПОДГОТОВКИ (этап 4): объявления людей со статусом
+        «согласен», которые мы ещё не пробовали выложить на сайт.
+
+        Возвращает список словарей {"nick", "link", "time"} от свежих к старым
+        (`time` — метка времени поста в миллисекундах, 0 если дату не разобрать).
+        `days` > 0 отсекает посты старше указанного числа дней — старое чаще
+        всего уже продано, публиковать его вредно.
+        None — если прочитать так и не удалось."""
+        params = {"action": "todo", "token": self._token,
+                  "limit": str(int(limit)), "days": str(int(days))}
+        for attempt in range(MAX_RETRIES):
+            try:
+                r = self._client.get(self._url, params=params)
+                r.raise_for_status()
+                data = r.json()
+                if not data.get("ok"):
+                    raise RuntimeError(f"Apps Script вернул ошибку: {data}")
+                return data.get("rows", []) or []
+            except Exception as e:  # noqa: BLE001
+                print(f"  ⚠ чтение очереди авто-подготовки не удалось "
+                      f"(попытка {attempt + 1}/{MAX_RETRIES}): {e}")
+                if attempt < MAX_RETRIES - 1:
+                    time.sleep(RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)])
+        return None
 
     def _post_retry(self, payload: dict, note: str) -> bool:
         last_err = None

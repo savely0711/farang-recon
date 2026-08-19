@@ -170,7 +170,7 @@ check('агентство недвижимости — на своей вкла�
 check('частник с недвижимостью остался в CRM', dump(CRM).some((r) => r[0] === 'oleg'));
 check('тип продавца записан', dump(AG)[0][9] === 'бизнес');
 check('«Написали?» по умолчанию Нет', dump(CRM).every((r) => r[6] === 'Нет'));
-check('«Присутствие» и «Нет на сайте» пустые', dump(CRM).every((r) => r[7] === '' && r[8] === ''));
+check('«Присутствие» и «На сайте» пустые', dump(CRM).every((r) => r[7] === '' && r[8] === ''));
 
 console.log('\n2. Дубль по ссылке не проходит');
 res = post({ token: 'T', action: 'append', rows: [
@@ -208,11 +208,28 @@ check('«Написали?» при этом осталось «Да»', dump(CR
 res = post({ token: 'T', action: 'presence', author: 'oleg', value: 'ерунда' });
 check('мусорное значение присутствия не пишется', dump(CRM).find((r) => r[0] === 'oleg')[7] === '');
 
-console.log('\n7. «Нет на сайте» — только у конкретного объявления');
-res = post({ token: 'T', action: 'nosite', link: 'https://t.me/g/2' });
+console.log('\n7. «На сайте» — только у конкретного объявления');
+res = post({ token: 'T', action: 'nosite', link: 'https://t.me/g/2', value: 'Не вышло' });
 check('покрашено одно объявление', res.found === 1, JSON.stringify(res));
-check('пометка стоит там, где надо', dump(CRM).find((r) => r[1] === 'https://t.me/g/2')[8] === 'Нет на сайте');
+check('пометка стоит там, где надо', dump(CRM).find((r) => r[1] === 'https://t.me/g/2')[8] === 'Не вышло');
 check('у соседнего объявления Ивана пусто', dump(CRM).find((r) => r[1] === 'https://t.me/g/1')[8] === '');
+res = post({ token: 'T', action: 'site', link: 'https://t.me/g/1', value: 'Опубликовано' });
+check('успех пишется отдельным значением', dump(CRM).find((r) => r[1] === 'https://t.me/g/1')[8] === 'Опубликовано', JSON.stringify(res));
+post({ token: 'T', action: 'site', link: 'https://t.me/g/1', value: 'что-то своё' });
+check('мусорное значение = «Не вышло»', dump(CRM).find((r) => r[1] === 'https://t.me/g/1')[8] === 'Не вышло');
+
+console.log('\n7а. Очередь авто-подготовки (todo)');
+// У Ивана «согласен» и 4 строки; две мы только что пометили, значит остаются 2.
+let todo = get({ action: 'todo', token: 'T' }).rows;
+check('в очередь попали только непомеченные строки согласного',
+  todo.length === 2 && todo.every((r) => r.nick === 'ivan'), JSON.stringify(todo));
+check('помеченные строки в очередь не попали',
+  todo.every((r) => r.link !== 'https://t.me/g/1' && r.link !== 'https://t.me/g/2'));
+check('todo с чужим токеном', get({ action: 'todo', token: 'X' }).ok === false);
+check('limit урезает очередь', get({ action: 'todo', token: 'T', limit: '1' }).rows.length === 1);
+// Вернём поле в исходное состояние, чтобы дальнейшие проверки не поехали.
+post({ token: 'T', action: 'site', link: 'https://t.me/g/1', value: '' });
+post({ token: 'T', action: 'site', link: 'https://t.me/g/2', value: '' });
 
 console.log('\n8. Статусы для рассылки: «сильный» статус побеждает');
 const st = get({ action: 'statuses', token: 'T' }).statuses;
@@ -236,7 +253,7 @@ old.appendRow(['sergey', 'https://t.me/g/102', 'Барахолка', 'Авто',
 SS._sheets.push(old);
 const mig = vm.runInContext('migrateAddColumns', ctx)();
 const head = old.getRange(1, 1, 1, 10).getValues()[0];
-check('шапка расширена до 10 колонок', head[7] === 'Присутствие' && head[8] === 'Нет на сайте' && head[9] === 'Тип продавца', JSON.stringify(head));
+check('шапка расширена до 10 колонок', head[7] === 'Присутствие' && head[8] === 'На сайте' && head[9] === 'Тип продавца', JSON.stringify(head));
 check('лист расширен физически', old.getMaxColumns() >= 10);
 check('вкладка агентств создана', !!SS.getSheetByName(AG));
 check('«Да» → «нет ответа» (второго письма не будет)', dump(CRM).find((r) => r[0] === 'petr')[7] === 'нет ответа');
