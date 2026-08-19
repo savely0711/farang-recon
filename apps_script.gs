@@ -651,11 +651,32 @@ function syncConsents() {
   var tabs = _ensureTabs();
   var map = _readConsents(tabs.consent);
   var people = 0;
+  for (var nick in map) { if (map.hasOwnProperty(nick)) people++; }
+
+  // Один проход по каждому листу: читаем ники и «Присутствие» разом, считаем
+  // новые значения в памяти и пишем одним setValues. Поштучный обход (по ника
+  // на каждый лист) для 200+ человек не укладывался в лимит времени Apps Script.
   var touched = 0;
-  for (var nick in map) {
-    if (!map.hasOwnProperty(nick)) continue;
-    people++;
-    touched += _setForNick(tabs, nick, PRESENCE_COL, map[nick].status);
+  var sheets = [tabs.crm, tabs.agency];
+  for (var s = 0; s < sheets.length; s++) {
+    var sh = sheets[s];
+    var last = sh.getLastRow();
+    if (last < 2) continue;
+    var n = last - 1;
+    var nicks = sh.getRange(2, NICK_COL, n, 1).getValues();
+    var rng = sh.getRange(2, PRESENCE_COL, n, 1);
+    var cur = rng.getValues();
+    var changed = false;
+    for (var i = 0; i < n; i++) {
+      var key = _normNick(nicks[i][0]);
+      if (!key || !map[key]) continue;
+      var want = map[key].status;
+      if (String(cur[i][0]) === String(want)) continue;
+      cur[i][0] = want;
+      changed = true;
+      touched++;
+    }
+    if (changed) rng.setValues(cur);
   }
   SpreadsheetApp.getActive().toast(
     'Реестр: людей ' + people + ', поправлено строк: ' + touched,
