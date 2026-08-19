@@ -21,8 +21,8 @@
 пост в базе сайта (db/32). Даже двойной запуск не создаст второе объявление.
 
 ЗАПУСК (на сервере Aeza):
-    python3 prepare.py              # обычный прогон
-    PREPARE_DRY=1 python3 prepare.py  # показать, что бы сделал, ничего не меняя
+    python3 prepare.py        # обычный прогон
+    python3 prepare.py dry    # показать, что бы сделал, ничего не меняя
 
 Настройки (.env):
     SITE_API_URL          — адрес точки приёма сайта (…/api/recon)
@@ -52,7 +52,11 @@ load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 LIMIT = int(os.environ.get("PREPARE_LIMIT", "30"))
 MAX_AGE_DAYS = int(os.environ.get("PREPARE_MAX_AGE_DAYS", "30"))
 MAX_PHOTOS = int(os.environ.get("PREPARE_MAX_PHOTOS", "6"))
-DRY = os.environ.get("PREPARE_DRY") == "1"
+# Тестовый режим: переменная PREPARE_DRY=1 ЛИБО слово «dry» первым аргументом.
+# Второе — ради консоли сервера Aeza: там не вводятся заглавные буквы и «_»,
+# то есть строку PREPARE_DRY=1 руками не набрать, а «dry» — легко.
+DRY = (os.environ.get("PREPARE_DRY") == "1"
+       or (len(sys.argv) > 1 and sys.argv[1].strip().lower() == "dry"))
 
 DELAY_BETWEEN_POSTS = 3.0   # сек: читаем не спеша, как человек
 PHOTO_MAX_SIDE = 1600       # px: больше на карточке всё равно не нужно
@@ -229,7 +233,7 @@ async def main() -> int:
         print("⛔ не заданы SITE_API_URL и/или RECON_API_TOKEN в .env — стоп.")
         return 1
     if DRY:
-        print("🧪 ТЕСТОВЫЙ РЕЖИМ (PREPARE_DRY=1): на сайт не шлю, таблицу не правлю.")
+        print("🧪 ТЕСТОВЫЙ РЕЖИМ (dry): на сайт не шлю, таблицу не правлю.")
 
     rows = sheet.read_todo(limit=LIMIT, days=MAX_AGE_DAYS)
     if rows is None:
