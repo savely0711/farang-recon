@@ -1,6 +1,6 @@
 /**
  * Скрипт-приёмник для Google-таблицы «Фаранг — Разведка рынка»
- * (режим мини-CRM «Присутствие», редакция 17.08.2026).
+ * (режим мини-CRM «Присутствие», редакция 19.08.2026 — реестр согласий).
  *
  * ЧТО ИЗМЕНИЛОСЬ ПРОТИВ ПРОШЛОЙ ВЕРСИИ (коротко, для человека):
  *   1. СТРОКА = ОБЪЯВЛЕНИЕ, а не человек. Раньше один ник давал одну строку
@@ -40,9 +40,29 @@
  *         «Присутствие» всем строкам ника (задел под этапы 3–4);
  *   POST {action:"nosite", link:"https://t.me/…", value:"Нет на сайте"} —
  *         пометка конкретному объявлению (задел под этап 4);
+ *   POST {action:"consent", nick:"ник", status:"согласен", reason:"почему"} —
+ *         запись в РЕЕСТР СОГЛАСИЙ (вкладка «Согласия») + «Присутствие» всем
+ *         строкам ника. Этим действием пользуется САЙТ: публикация объявления
+ *         «за автора» → «согласен», первый вход автора через Telegram →
+ *         «зарегистрирован». «Отказ» Савелий ставит руками в реестре;
  *   GET  ?action=statuses — отдать карту {ник: статус «Написали?»};
+ *   GET  ?action=consents — отдать карту {ник: статус согласия};
  *   GET                   — проверка «живой ли» (alive).
  * Во всех запросах обязателен общий пароль-токен (token), кроме простого alive.
+ *
+ * РЕЕСТР СОГЛАСИЙ (вкладка «Согласия», этап 3 плана мини-CRM):
+ *   Одна строка на человека: Ник | Статус | Когда | Основание.
+ *   Это единственный источник правды о согласии — сервер разведки в базу сайта
+ *   не ходит вообще. Статусы по силе: отказ > зарегистрирован > согласен;
+ *   слабый не перезаписывает сильный, поэтому автоматика с сайта не затрёт
+ *   ручной отказ. Лист защищён «мягко» (предупреждение при правке).
+ *   Статус из реестра сильнее соседних строк: новое объявление человека сразу
+ *   рождается с его настоящим статусом.
+ *
+ * ФУНКЦИИ ПОД КНОПКУ ▶ Run (запускать прямо в редакторе Apps Script):
+ *   syncConsents()       — пересчитать «Присутствие» во всех строках по
+ *      реестру. Нужен после разовой заливки ников из базы и после ручных
+ *      правок реестра. Запускать можно сколько угодно раз.
  *
  * РАЗОВЫЕ МИГРАЦИИ (запускать кнопкой ▶ Run прямо в редакторе Apps Script):
  *   migrateAddColumns()  — ГЛАВНАЯ для этой версии: дописывает три новые
@@ -62,6 +82,7 @@ var TOKEN = 'PASTE_YOUR_TOKEN_HERE'; // тот же, что в .env (SHEET_TOKEN
 
 var CRM_TAB = 'CRM';
 var AGENCY_TAB = 'Недвижимость — агентства';
+var CONSENT_TAB = 'Согласия';   // реестр согласий (этап 3 плана мини-CRM)
 
 var HEADER = ['Ник', 'Ссылка', 'Канал', 'Категория', 'Дата', 'Описание',
               'Написали?', 'Присутствие', 'Нет на сайте', 'Тип продавца'];
@@ -94,6 +115,25 @@ var SELLERS = [SELLER_PRIVATE, SELLER_BUSINESS];
 var NOSITE_MARK = 'Нет на сайте';
 var REALTY_SLUG = 'realty'; // категория недвижимости (см. categories.py)
 
+// ── РЕЕСТР СОГЛАСИЙ (вкладка «Согласия»), этап 3 плана мини-CRM ──
+// Одна строка на человека. Это ЕДИНСТВЕННЫЙ источник правды о том, кто нам
+// разрешил (или запретил) работать с его объявлениями: сервер разведки в базу
+// сайта не ходит, сайт сам сообщает сюда о событиях.
+var CONSENT_HEADER = ['Ник', 'Статус', 'Когда', 'Основание'];
+var C_NICK_COL = 1;    // A — ник без @, нижним регистром
+var C_STATUS_COL = 2;  // B — согласен / зарегистрирован / отказ
+var C_WHEN_COL = 3;    // C — дата события (ГГГГ-ММ-ДД)
+var C_REASON_COL = 4;  // D — основание («опубликовано объявление за автора» и т.п.)
+var CONSENT_STATUSES = [PR_AGREED, PR_REGISTERED, PR_REFUSED];
+
+// Сила статуса: больше — сильнее. Слабый НЕ перезаписывает сильный, чтобы
+// сайт своим автоматическим «согласен» не затёр отказ, поставленный руками.
+// Снять «отказ» может только человек — правкой ячейки в реестре.
+var CONSENT_RANK = {};
+CONSENT_RANK[PR_AGREED] = 1;
+CONSENT_RANK[PR_REGISTERED] = 2;
+CONSENT_RANK[PR_REFUSED] = 3;
+
 // ── цвета ──
 var GREEN = '#b7e1cd';   // строка целиком: «Написали?» = Да
 var YELLOW = '#ffe599';  // строка целиком: «Премиум»
@@ -124,6 +164,11 @@ function doPost(e) {
       var foundP = _setForNick(tabs, body.author, PRESENCE_COL,
                                _safePresence(body.value));
       return _json({ ok: true, found: foundP });
+    }
+
+    if (action === 'consent') {
+      return _json(_setConsent(tabs, body.nick || body.author,
+                               body.status || body.value, body.reason));
     }
 
     if (action === 'nosite') {
@@ -160,6 +205,18 @@ function doGet(e) {
     return _json({ ok: true, statuses: _readStatuses(_ensureTabs()) });
   }
 
+  if (action === 'consents') {
+    if (params.token !== TOKEN) {
+      return _json({ ok: false, error: 'bad token' });
+    }
+    var map = _readConsents(_ensureTabs().consent);
+    var out = {};
+    for (var nick in map) {
+      if (map.hasOwnProperty(nick)) out[nick] = map[nick].status;
+    }
+    return _json({ ok: true, consents: out });
+  }
+
   return _json({ ok: true, alive: true });
 }
 
@@ -170,7 +227,66 @@ function _ensureTabs() {
   return {
     crm: _ensureSheet(CRM_TAB, 0),
     agency: _ensureSheet(AGENCY_TAB, 1),
+    consent: _ensureConsentSheet(),
   };
+}
+
+/** Вкладка «Согласия» — реестр (этап 3). Создаётся при первом обращении:
+ *  шапка, выпадающий список статусов, подсветка и мягкая защита листа
+ *  (предупреждение при попытке править — чтобы реестр не стёрли случайно). */
+function _ensureConsentSheet() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sh = ss.getSheetByName(CONSENT_TAB);
+  if (!sh) {
+    sh = ss.insertSheet(CONSENT_TAB, 2);
+    sh.appendRow(CONSENT_HEADER);
+    sh.setFrozenRows(1);
+  } else if (sh.getLastColumn() === 0) {
+    sh.appendRow(CONSENT_HEADER);
+    sh.setFrozenRows(1);
+  }
+  var cur = sh.getRange(1, 1, 1, CONSENT_HEADER.length).getValues()[0];
+  var changed = false;
+  for (var i = 0; i < CONSENT_HEADER.length; i++) {
+    if (String(cur[i] || '').trim() === '') { cur[i] = CONSENT_HEADER[i]; changed = true; }
+  }
+  if (changed) {
+    sh.getRange(1, 1, 1, CONSENT_HEADER.length).setValues([cur]);
+    sh.setFrozenRows(1);
+  }
+  var rows = sh.getMaxRows() - 1;
+  if (rows > 0) {
+    sh.getRange(2, C_STATUS_COL, rows, 1)
+      .setDataValidation(_listRule(CONSENT_STATUSES, true));
+    var pairs = [[PR_AGREED, PR_GREEN], [PR_REGISTERED, PR_BLUE], [PR_REFUSED, PR_RED]];
+    var rng = sh.getRange(2, 1, rows, CONSENT_HEADER.length);
+    var rules = [];
+    for (var j = 0; j < pairs.length; j++) {
+      rules.push(SpreadsheetApp.newConditionalFormatRule()
+        .whenFormulaSatisfied('=$B2="' + pairs[j][0] + '"')
+        .setBackground(pairs[j][1])
+        .setRanges([rng])
+        .build());
+    }
+    sh.setConditionalFormatRules(rules);
+  }
+  _protectConsent(sh);
+  return sh;
+}
+
+/** Мягкая защита реестра: Google предупредит перед правкой, но не запретит.
+ *  Реестр — единственный источник правды; потеряем его — люди получат
+ *  повторные письма (раздел 5 плана мини-CRM). */
+function _protectConsent(sh) {
+  try {
+    var existing = sh.getProtections(SpreadsheetApp.ProtectionType.SHEET);
+    if (existing && existing.length) return;
+    sh.protect()
+      .setDescription('Реестр согласий — единственный источник правды. Правьте осознанно.')
+      .setWarningOnly(true);
+  } catch (err) {
+    // В тестовой среде (или без прав) защиты нет — это не повод падать.
+  }
 }
 
 function _ensureSheet(name, position) {
@@ -302,6 +418,81 @@ function _safeSeller(v) {
   return SELLERS.indexOf(s) === -1 ? '' : s;
 }
 
+function _safeConsent(v) {
+  var s = String(v == null ? '' : v).trim().toLowerCase();
+  return CONSENT_STATUSES.indexOf(s) === -1 ? '' : s;
+}
+
+/** Сегодняшняя дата как ГГГГ-ММ-ДД (пишем её в колонку «Когда»). */
+function _today() {
+  var d = new Date();
+  var pad = function (n) { return (n < 10 ? '0' : '') + n; };
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+}
+
+/** Реестр целиком: {ник: {status, when, reason, row}}. */
+function _readConsents(sh) {
+  var out = {};
+  if (!sh) return out;
+  var last = sh.getLastRow();
+  if (last < 2) return out;
+  var vals = sh.getRange(2, 1, last - 1, CONSENT_HEADER.length).getValues();
+  for (var i = 0; i < vals.length; i++) {
+    var nick = _normNick(vals[i][C_NICK_COL - 1]);
+    if (!nick) continue;
+    var status = _safeConsent(vals[i][C_STATUS_COL - 1]);
+    if (!status) continue;
+    var prev = out[nick];
+    // Если ник случайно попал в реестр дважды — оставляем сильный статус.
+    if (prev && CONSENT_RANK[prev.status] >= CONSENT_RANK[status]) continue;
+    out[nick] = {
+      status: status,
+      when: String(vals[i][C_WHEN_COL - 1] || ''),
+      reason: String(vals[i][C_REASON_COL - 1] || ''),
+      row: i + 2,
+    };
+  }
+  return out;
+}
+
+/**
+ * Записывает событие в реестр и сразу проставляет «Присутствие» во ВСЕХ
+ * строках этого ника (обе рабочие вкладки).
+ * Слабый статус не перезаписывает сильный: «отказ» > «зарегистрирован» >
+ * «согласен». Так автоматическое сообщение с сайта не затрёт ручной отказ.
+ */
+function _setConsent(tabs, nickRaw, statusRaw, reason) {
+  var nick = _normNick(nickRaw);
+  var status = _safeConsent(statusRaw);
+  if (!nick) return { ok: false, error: 'empty nick' };
+  if (!status) return { ok: false, error: 'bad status' };
+
+  var sh = tabs.consent;
+  var map = _readConsents(sh);
+  var cur = map[nick];
+
+  if (cur && CONSENT_RANK[cur.status] > CONSENT_RANK[status]) {
+    // Сильнее того, что пришло, — ничего не меняем, но статус в строках
+    // на всякий случай подравниваем под реестр.
+    return {
+      ok: true, nick: nick, status: cur.status, kept: true,
+      found: _setForNick(tabs, nick, PRESENCE_COL, cur.status),
+    };
+  }
+
+  var when = _today();
+  var note = String(reason == null ? '' : reason);
+  if (cur) {
+    sh.getRange(cur.row, C_STATUS_COL, 1, 3).setValues([[status, when, note]]);
+  } else {
+    sh.appendRow([nick, status, when, note]);
+  }
+  return {
+    ok: true, nick: nick, status: status, kept: false,
+    found: _setForNick(tabs, nick, PRESENCE_COL, status),
+  };
+}
+
 /** Читает лист один раз и отдаёт: ссылки (для дедупа) и статусы по никам. */
 function _scan(sh, links, byNick) {
   var last = sh.getLastRow();
@@ -342,6 +533,9 @@ function _appendDedup(tabs, rows) {
   var byNick = {};
   _scan(tabs.crm, links, byNick);
   _scan(tabs.agency, links, byNick);
+  // Реестр согласий важнее соседних строк: если человек уже согласился или
+  // отказался, его новое объявление сразу получает правильный статус.
+  var consents = _readConsents(tabs.consent);
 
   var buckets = {};
   buckets[CRM_TAB] = [];
@@ -356,10 +550,11 @@ function _appendDedup(tabs, rows) {
 
     var nick = _normNick(r.author);
     var st = (nick && byNick[nick]) ? byNick[nick] : { written: ST_TODO, presence: '' };
+    var presence = (nick && consents[nick]) ? consents[nick].status : st.presence;
 
     buckets[_pickTab(r)].push([
       r.author || '', r.link || '', r.channel || '', r.category || '',
-      r.date || '', r.snippet || '', st.written, st.presence, '',
+      r.date || '', r.snippet || '', st.written, presence, '',
       _safeSeller(r.seller_type),
     ]);
     total++;
@@ -430,6 +625,29 @@ function _readStatuses(tabs) {
     out[nick] = (STATUSES.indexOf(st) === -1) ? ST_TODO : st;
   }
   return out;
+}
+
+// ─────────── ПЕРЕСЧЁТ ПО РЕЕСТРУ (запуск кнопкой ▶) ───────────
+/**
+ * Проходит по вкладке «Согласия» и проставляет «Присутствие» всем строкам
+ * каждого ника на обеих рабочих вкладках. Нужен после разовой заливки ников
+ * из базы сайта и вообще всякий раз, когда реестр правили руками.
+ * Безопасен: запускать можно сколько угодно раз.
+ */
+function syncConsents() {
+  var tabs = _ensureTabs();
+  var map = _readConsents(tabs.consent);
+  var people = 0;
+  var touched = 0;
+  for (var nick in map) {
+    if (!map.hasOwnProperty(nick)) continue;
+    people++;
+    touched += _setForNick(tabs, nick, PRESENCE_COL, map[nick].status);
+  }
+  SpreadsheetApp.getActive().toast(
+    'Реестр: людей ' + people + ', поправлено строк: ' + touched,
+    'Согласия', 10);
+  return { people: people, touched: touched };
 }
 
 // ─────────── МИГРАЦИЯ ПОД НОВЫЕ КОЛОНКИ (запуск кнопкой ▶) ───────────

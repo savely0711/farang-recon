@@ -123,7 +123,7 @@ const ContentService = {
 
 // ─────────────── загрузка скрипта ───────────────
 const src = fs.readFileSync(path.join(__dirname, 'apps_script.gs'), 'utf8');
-const ctx = vm.createContext({ SpreadsheetApp, ContentService, console, JSON, String, Math, Object });
+const ctx = vm.createContext({ SpreadsheetApp, ContentService, console, JSON, String, Math, Object, Date });
 vm.runInContext(src, ctx);
 ctx.TOKEN = 'T';
 
@@ -258,6 +258,59 @@ res = post({ token: 'T', action: 'append', rows: [
 const petrNew = dump(CRM).find((r) => r[1] === 'https://t.me/g/200');
 check('добавилась одна строка (вторая — дубль ссылки)', res.written === 1, JSON.stringify(res));
 check('унаследованы и «Да», и «нет ответа»', petrNew[6] === 'Да' && petrNew[7] === 'нет ответа', JSON.stringify(petrNew));
+
+const CONSENT = 'Согласия';
+function dumpConsent() {
+  const sh = SS.getSheetByName(CONSENT);
+  const last = sh.getLastRow();
+  if (last < 2) return [];
+  return sh.getRange(2, 1, last - 1, 4).getValues();
+}
+
+console.log('\n13. Реестр согласий: сайт сообщает «согласен»');
+SS._sheets.length = 0;
+post({ token: 'T', action: 'append', rows: [
+  { author: 'ivan', link: 'https://t.me/g/1', channel: 'Барахолка', category: 'Электроника', category_slug: 'electronics', date: '2026-08-17 10:00', snippet: 'Айфон', seller_type: 'частник' },
+  { author: 'ivan', link: 'https://t.me/g/2', channel: 'Барахолка', category: 'Мебель', category_slug: 'home', date: '2026-08-17 10:05', snippet: 'Стол', seller_type: 'частник' },
+  { author: 'maria', link: 'https://t.me/g/3', channel: 'Барахолка', category: 'Спорт', category_slug: 'sport', date: '2026-08-17 10:10', snippet: 'Велосипед', seller_type: 'частник' },
+] });
+res = post({ token: 'T', action: 'consent', nick: '@Ivan', status: 'согласен', reason: 'опубликовано объявление за автора' });
+check('строка в реестре появилась', dumpConsent().length === 1 && dumpConsent()[0][0] === 'ivan', JSON.stringify(dumpConsent()));
+check('основание записано', dumpConsent()[0][3] === 'опубликовано объявление за автора');
+check('дата проставлена', /^\d{4}-\d{2}-\d{2}$/.test(String(dumpConsent()[0][2])), String(dumpConsent()[0][2]));
+check('«Присутствие» проставлено обеим строкам Ивана', res.found === 2, JSON.stringify(res));
+check('в таблице статус виден', dump(CRM).filter((r) => r[0] === 'ivan').every((r) => r[7] === 'согласен'));
+check('чужие строки не тронуты', dump(CRM).find((r) => r[0] === 'maria')[7] === '');
+
+console.log('\n14. Новое объявление согласившегося сразу рождается со статусом');
+post({ token: 'T', action: 'append', rows: [
+  { author: 'ivan', link: 'https://t.me/g/4', channel: 'Барахолка', category: 'Спорт', category_slug: 'sport', date: '2026-08-19 08:00', snippet: 'Лыжи', seller_type: 'частник' },
+] });
+check('унаследован «согласен» из реестра', dump(CRM).find((r) => r[1] === 'https://t.me/g/4')[7] === 'согласен');
+
+console.log('\n15. Сильный статус не понижается слабым');
+post({ token: 'T', action: 'consent', nick: 'ivan', status: 'зарегистрирован', reason: 'вошёл через Telegram' });
+check('«зарегистрирован» сильнее «согласен»', dumpConsent()[0][1] === 'зарегистрирован', JSON.stringify(dumpConsent()));
+check('строк в реестре по-прежнему одна (человек = строка)', dumpConsent().length === 1);
+post({ token: 'T', action: 'consent', nick: 'ivan', status: 'отказ', reason: 'попросил не писать' });
+res = post({ token: 'T', action: 'consent', nick: 'ivan', status: 'согласен', reason: 'сайт опубликовал ещё одно' });
+check('отказ автоматикой не снимается', dumpConsent()[0][1] === 'отказ' && res.kept === true, JSON.stringify(res));
+check('в таблице у Ивана стоит «отказ»', dump(CRM).filter((r) => r[0] === 'ivan').every((r) => r[7] === 'отказ'));
+
+console.log('\n16. Мусор, чужой токен и ручной пересчёт');
+check('мусорный статус не принимается', post({ token: 'T', action: 'consent', nick: 'maria', status: 'ерунда' }).ok === false);
+check('пустой ник не принимается', post({ token: 'T', action: 'consent', nick: '', status: 'согласен' }).ok === false);
+check('consent с чужим токеном', post({ token: 'X', action: 'consent', nick: 'maria', status: 'согласен' }).ok === false);
+check('в реестре по-прежнему один человек', dumpConsent().length === 1);
+const cons = get({ action: 'consents', token: 'T' }).consents;
+check('реестр отдаётся наружу', cons.ivan === 'отказ', JSON.stringify(cons));
+check('consents с чужим токеном', get({ action: 'consents', token: 'X' }).ok === false);
+// руками дописали строку в реестр (так Савелий ставит «отказ» и так зальются ники из базы)
+SS.getSheetByName(CONSENT).appendRow(['maria', 'согласен', '2026-08-19', 'выгрузка из базы']);
+const sync = vm.runInContext('syncConsents', ctx)();
+check('пересчёт нашёл двоих', sync.people === 2, JSON.stringify(sync));
+check('Марии проставлен статус из реестра', dump(CRM).find((r) => r[0] === 'maria')[7] === 'согласен');
+check('повторный пересчёт ничего не меняет', vm.runInContext('syncConsents', ctx)().touched === 0);
 
 console.log(failed === 0 ? '\n🏁 ВСЁ ЗЕЛЁНОЕ\n' : `\n⛔ ПРОВАЛЕНО ПРОВЕРОК: ${failed}\n`);
 process.exit(failed === 0 ? 0 : 1);

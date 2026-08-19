@@ -32,7 +32,11 @@ JSON-ключ (консоль Aeza ломает крупную вставку, �
     ВСЕХ его строках («Да» после отправки, «Премиум» или «Не доставлено» —
     если письмо не ушло);
   - set_presence(author, value) — задел под этапы 3–4 (сайт сообщает «согласен»
-    / «зарегистрирован»); рассылка этим методом не пользуется.
+    / «зарегистрирован»); рассылка этим методом не пользуется;
+  - set_consent(nick, status, reason) / read_consents() — РЕЕСТР СОГЛАСИЙ
+    (вкладка «Согласия», этап 3): одна строка на человека, единственный
+    источник правды о согласии. Пополняет его сайт; разведке нужен только для
+    проверок. Статусы по силе: отказ > зарегистрирован > согласен.
 
 ВАЖНО (надёжность): пишем ПАЧКАМИ и переживаем временные сбои Google — повторяем
 несколько раз, и если не вышло, НЕ роняем прогон, а сообщаем наверх.
@@ -138,6 +142,39 @@ class Sheet:
         payload = {"token": self._token, "action": "presence",
                    "author": author, "value": value}
         return self._post_retry(payload, note=f"присутствие @{author}={value}")
+
+    def set_consent(self, nick: str, status: str, reason: str = "") -> bool:
+        """Пишет событие в РЕЕСТР СОГЛАСИЙ (вкладка «Согласия») и заодно
+        проставляет «Присутствие» во всех строках этого ника.
+
+        Статусы: «согласен» (мы опубликовали его объявление), «зарегистрирован»
+        (завёл аккаунт на сайте), «отказ». Слабый статус не перезаписывает
+        сильный — отказ, поставленный руками, автоматика не снимет.
+
+        Этим пользуется САЙТ (этап 3 плана мини-CRM). Разведке метод нужен
+        только для проверок и разовых заливок."""
+        payload = {"token": self._token, "action": "consent",
+                   "nick": nick, "status": status, "reason": reason}
+        return self._post_retry(payload, note=f"согласие @{nick}={status}")
+
+    def read_consents(self):
+        """Реестр согласий целиком: {ник(нижний, без @): статус}.
+        None — если прочитать так и не удалось."""
+        params = {"action": "consents", "token": self._token}
+        for attempt in range(MAX_RETRIES):
+            try:
+                r = self._client.get(self._url, params=params)
+                r.raise_for_status()
+                data = r.json()
+                if not data.get("ok"):
+                    raise RuntimeError(f"Apps Script вернул ошибку: {data}")
+                return data.get("consents", {}) or {}
+            except Exception as e:  # noqa: BLE001
+                print(f"  ⚠ чтение реестра согласий не удалось "
+                      f"(попытка {attempt + 1}/{MAX_RETRIES}): {e}")
+                if attempt < MAX_RETRIES - 1:
+                    time.sleep(RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)])
+        return None
 
     def mark_no_site(self, link: str, value: str = "Нет на сайте") -> bool:
         """Помечает конкретное объявление (по ссылке) как неопубликованное:
