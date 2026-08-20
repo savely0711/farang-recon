@@ -54,6 +54,7 @@ from telethon.errors import FloodWaitError
 from telethon.sessions import StringSession
 
 from build import build_listing
+from phash import fingerprint
 from sheets import SITE_FAIL, SITE_OK, Sheet
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
@@ -129,7 +130,13 @@ async def _collect_photos(client, entity, msg) -> list[dict]:
         if not small:
             continue
         data, ext = small
-        out.append({"data": base64.b64encode(data).decode("ascii"), "ext": ext})
+        # Отпечаток картинки — для поиска дублей на сайте (db/33). Считаем
+        # здесь: снимок уже в руках, а сайту разбирать JPEG нечем.
+        out.append({
+            "data": base64.b64encode(data).decode("ascii"),
+            "ext": ext,
+            "phash": fingerprint(data),
+        })
     return out
 
 

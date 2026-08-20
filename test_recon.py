@@ -281,6 +281,50 @@ check("чужая ссылка отбрасывается",
 check("приватная ссылка (t.me/c/...) не берётся",
       not prepare.LINK_RE.match("https://t.me/c/1234567/89"))
 
+# ─────────────── phash.py (отпечаток картинки) ───────────────
+print("\n7. Отпечаток картинки (phash.py)")
+import io  # noqa: E402
+
+import phash  # noqa: E402
+
+try:
+    from PIL import Image, ImageDraw, ImageFilter  # noqa: PLC0415
+
+    import random
+
+    random.seed(7)
+    pic = Image.new("RGB", (900, 600))
+    draw = ImageDraw.Draw(pic)
+    for i in range(600):
+        draw.line([(0, i), (900, i)], fill=(30 + i // 4, 90 + i // 8, 200 - i // 5))
+    for _ in range(40):
+        x, y = random.randint(0, 860), random.randint(0, 560)
+        draw.ellipse(
+            [x, y, x + random.randint(20, 120), y + random.randint(20, 120)],
+            fill=(random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)),
+        )
+    pic = pic.filter(ImageFilter.GaussianBlur(1.2))
+
+    def _jpeg(img, quality=90):
+        buf = io.BytesIO()
+        img.save(buf, "JPEG", quality=quality)
+        return buf.getvalue()
+
+    base = phash.fingerprint(_jpeg(pic))
+    check("отпечаток — 64 нуля и единицы",
+          bool(base) and len(base) == 64 and set(base) <= {"0", "1"})
+    # Пережатие и уменьшение картинку не меняют — отпечаток обязан устоять,
+    # иначе перепост в Telegram перестанет считаться дублем.
+    check("переживает пережатие в JPEG",
+          phash.distance(base, phash.fingerprint(_jpeg(pic, 40))) <= 4)
+    check("переживает уменьшение вдвое",
+          phash.distance(base, phash.fingerprint(_jpeg(pic.resize((450, 300))))) <= 4)
+    other = phash.fingerprint(_jpeg(Image.new("RGB", (900, 600), (200, 30, 30))))
+    check("другая картинка — далеко", phash.distance(base, other) > 20)
+    check("мусор вместо картинки не роняет", phash.fingerprint(b"not an image at all") is None)
+except ImportError:
+    print("  … Pillow не установлен, проверка пропущена")
+
 # ─────────────── итог ───────────────
 if FAILED:
     print(f"\n⛔ ПРОВАЛЕНО ПРОВЕРОК: {len(FAILED)}\n")
