@@ -329,5 +329,47 @@ check('пересчёт нашёл двоих', sync.people === 2, JSON.stringif
 check('Марии проставлен статус из реестра', dump(CRM).find((r) => r[0] === 'maria')[7] === 'согласен');
 check('повторный пересчёт ничего не меняет', vm.runInContext('syncConsents', ctx)().touched === 0);
 
+console.log('\n17. Ночная сверка с сайтом');
+// Готовим строку, которую «уже разместили».
+post({ token: 'T', action: 'append', rows: [
+  { author: 'petr', link: 'https://t.me/g/50', channel: 'Барахолка', category: 'Электроника', category_slug: 'electronics', date: '2026-08-20 10:00', snippet: 'Ноутбук', seller_type: 'частник' },
+] });
+post({ token: 'T', action: 'site', link: 'https://t.me/g/50', value: 'Опубликовано' });
+let placed = get({ action: 'placed', token: 'T' }).rows;
+check('размещённые отдаются со ссылкой и статусом',
+  placed.length === 1 && placed[0].link === 'https://t.me/g/50' && placed[0].site === 'Опубликовано',
+  JSON.stringify(placed));
+check('placed с чужим токеном', get({ action: 'placed', token: 'X' }).ok === false);
+
+// Сверка сказала: объявление в каталоге.
+res = post({ token: 'T', action: 'sitebulk', rows: [{ link: 'https://t.me/g/50', value: 'В каталоге' }] });
+check('пакетная запись обновила строку', res.updated === 1, JSON.stringify(res));
+check('в таблице новое состояние',
+  dump(CRM).find((r) => r[1] === 'https://t.me/g/50')[8] === 'В каталоге');
+check('повторная запись того же ничего не меняет',
+  post({ token: 'T', action: 'sitebulk', rows: [{ link: 'https://t.me/g/50', value: 'В каталоге' }] }).updated === 0);
+
+// «Удалено» — окончательное состояние: больше не сверяем.
+post({ token: 'T', action: 'sitebulk', rows: [{ link: 'https://t.me/g/50', value: 'Удалено' }] });
+check('удалённые из сверки выпадают', get({ action: 'placed', token: 'T' }).rows.length === 0);
+check('мусорное значение превращается в «Не вышло»',
+  post({ token: 'T', action: 'sitebulk', rows: [{ link: 'https://t.me/g/50', value: 'абракадабра' }] }).updated === 1 &&
+  dump(CRM).find((r) => r[1] === 'https://t.me/g/50')[8] === 'Не вышло');
+
+const nicks = get({ action: 'nicks', token: 'T' }).nicks;
+check('ники отдаются без повторов',
+  nicks.indexOf('petr') !== -1 && nicks.length === new Set(nicks).size, JSON.stringify(nicks));
+
+// Пакет согласий: человек зарегистрировался сам — за него больше не публикуем.
+res = post({ token: 'T', action: 'consentbulk', rows: [
+  { nick: 'petr', status: 'зарегистрирован', reason: 'нашёлся при ночной сверке' },
+] });
+check('пакет согласий записался', res.changed === 1, JSON.stringify(res));
+check('в строке появился статус «зарегистрирован»',
+  dump(CRM).find((r) => r[0] === 'petr')[7] === 'зарегистрирован');
+check('отказ пакетом не понижается',
+  post({ token: 'T', action: 'consentbulk', rows: [{ nick: 'ivan', status: 'зарегистрирован' }] }).changed === 0 &&
+  dumpConsent().find((r) => r[0] === 'ivan')[1] === 'отказ');
+
 console.log(failed === 0 ? '\n🏁 ВСЁ ЗЕЛЁНОЕ\n' : `\n⛔ ПРОВАЛЕНО ПРОВЕРОК: ${failed}\n`);
 process.exit(failed === 0 ? 0 : 1);

@@ -53,6 +53,11 @@
  *         «зарегистрирован». «Отказ» Савелий ставит руками в реестре;
  *   GET  ?action=statuses — отдать карту {ник: статус «Написали?»};
  *   GET  ?action=consents — отдать карту {ник: статус согласия};
+ *   GET  ?action=placed — размещённые объявления (ссылка + текущее значение
+ *                  «На сайте») для ночной сверки с сайтом;
+ *   GET  ?action=nicks — все ники таблицы (для сверки, кто зарегистрировался);
+ *   POST {action:"sitebulk", rows:[{link,value}]} — пакетная запись «На сайте»;
+ *   POST {action:"consentbulk", rows:[{nick,status,reason}]} — пакет согласий;
  *   GET                   — проверка «живой ли» (alive).
  * Во всех запросах обязателен общий пароль-токен (token), кроме простого alive.
  *
@@ -120,9 +125,18 @@ var SELLER_BUSINESS = 'бизнес';
 var SELLERS = [SELLER_PRIVATE, SELLER_BUSINESS];
 
 // Результат авто-подготовки объявления (этап 4). Пусто = ещё не пробовали.
-var SITE_OK = 'Опубликовано';   // ушло на сайт, ждёт модератора
-var SITE_FAIL = 'Не вышло';     // не получилось (нет фото, не разобрана цена…)
-var SITE_VALUES = [SITE_OK, SITE_FAIL];
+// «Опубликовано» ставит сам прогон авто-подготовки, а дальше значение уточняет
+// ночная сверка с сайтом (syncsite.py): она спрашивает, что стало с каждым
+// объявлением, и пишет одно из четырёх состояний ниже.
+var SITE_OK = 'Опубликовано';       // ушло на сайт (сразу после прогона)
+var SITE_CATALOG = 'В каталоге';    // одобрено, люди его видят
+var SITE_REVIEW = 'Ждёт модератора';// лежит в очереди на проверку
+var SITE_OFF = 'Снято';             // снято модерацией, продавцом или по сроку
+var SITE_GONE = 'Удалено';          // удалено насовсем (в т.ч. как дубль)
+var SITE_FAIL = 'Не вышло';         // не получилось (нет фото, не разобрана цена…)
+var SITE_VALUES = [SITE_OK, SITE_CATALOG, SITE_REVIEW, SITE_OFF, SITE_GONE, SITE_FAIL];
+// Значения, которые НЕ надо сверять с сайтом: объявления за ними нет и не будет.
+var SITE_FINAL = [SITE_FAIL, SITE_GONE];
 var NOSITE_MARK = SITE_FAIL;    // старое имя
 var REALTY_SLUG = 'realty'; // категория недвижимости (см. categories.py)
 
@@ -182,6 +196,23 @@ function doPost(e) {
                                body.status || body.value, body.reason));
     }
 
+    // Ночная сверка пишет пачкой: поштучный обход 500 строк не укладывается
+    // в лимит времени Apps Script.
+    if (action === 'sitebulk') {
+      return _json(_setSiteBulk(tabs, body.rows));
+    }
+
+    if (action === 'consentbulk') {
+      var list = body.rows || [];
+      var changed = 0;
+      for (var ci = 0; ci < list.length; ci++) {
+        var it = list[ci] || {};
+        var r = _setConsent(tabs, it.nick, it.status, it.reason || '');
+        if (r.ok && !r.kept) changed++;
+      }
+      return _json({ ok: true, changed: changed });
+    }
+
     if (action === 'nosite' || action === 'site') {
       var foundN = _setForLink(tabs, body.link, SITE_COL, _safeSite(body.value));
       return _json({ ok: true, found: foundN });
@@ -227,6 +258,22 @@ function doGet(e) {
     return _json({ ok: true, consents: out });
   }
 
+  // Ночная сверка: что мы уже разместили (нужны ссылки) и кто вообще есть в
+  // таблице (нужны ники). Оба списка отдаём целиком — их тысячи, не миллионы.
+  if (action === 'placed') {
+    if (params.token !== TOKEN) {
+      return _json({ ok: false, error: 'bad token' });
+    }
+    return _json({ ok: true, rows: _readPlaced(_ensureTabs()) });
+  }
+
+  if (action === 'nicks') {
+    if (params.token !== TOKEN) {
+      return _json({ ok: false, error: 'bad token' });
+    }
+    return _json({ ok: true, nicks: _readNicks(_ensureTabs()) });
+  }
+
   if (action === 'todo') {
     if (params.token !== TOKEN) {
       return _json({ ok: false, error: 'bad token' });
@@ -239,6 +286,90 @@ function doGet(e) {
   }
 
   return _json({ ok: true, alive: true });
+}
+
+/**
+ * Размещённые объявления — для ночной сверки с сайтом: строки, у которых
+ * колонка «На сайте» заполнена чем-то, кроме окончательных значений
+ * («Не вышло», «Удалено»). Их состояние ещё может измениться, поэтому именно
+ * их мы и переспрашиваем у сайта.
+ */
+function _readPlaced(tabs) {
+  var sheets = [tabs.crm, tabs.agency];
+  var out = [];
+  for (var s = 0; s < sheets.length; s++) {
+    var sh = sheets[s];
+    var last = sh.getLastRow();
+    if (last < 2) continue;
+    var vals = sh.getRange(2, 1, last - 1, HEADER.length).getValues();
+    for (var i = 0; i < vals.length; i++) {
+      var site = String(vals[i][SITE_COL - 1] || '').trim();
+      if (!site || SITE_FINAL.indexOf(site) !== -1) continue;
+      var link = String(vals[i][LINK_COL - 1] || '').trim();
+      if (!link) continue;
+      out.push({ link: link, site: site });
+    }
+  }
+  return out;
+}
+
+/** Все ники из обеих рабочих вкладок, без повторов. */
+function _readNicks(tabs) {
+  var sheets = [tabs.crm, tabs.agency];
+  var seen = {};
+  var out = [];
+  for (var s = 0; s < sheets.length; s++) {
+    var sh = sheets[s];
+    var last = sh.getLastRow();
+    if (last < 2) continue;
+    var vals = sh.getRange(2, NICK_COL, last - 1, 1).getValues();
+    for (var i = 0; i < vals.length; i++) {
+      var nick = _normNick(vals[i][0]);
+      if (!nick || seen[nick]) continue;
+      seen[nick] = true;
+      out.push(nick);
+    }
+  }
+  return out;
+}
+
+/**
+ * Пакетная запись колонки «На сайте»: {link: значение}. Читаем каждый лист
+ * один раз, меняем в памяти и пишем одним setValues — так 500 строк
+ * обновляются за секунды, а не за минуты.
+ */
+function _setSiteBulk(tabs, rowsIn) {
+  var wanted = {};
+  var list = rowsIn || [];
+  for (var i = 0; i < list.length; i++) {
+    var it = list[i] || {};
+    var key = _normLink(it.link);
+    var val = _safeSite(it.value);
+    if (key && val) wanted[key] = val;
+  }
+
+  var updated = 0;
+  var sheets = [tabs.crm, tabs.agency];
+  for (var s = 0; s < sheets.length; s++) {
+    var sh = sheets[s];
+    var last = sh.getLastRow();
+    if (last < 2) continue;
+    var n = last - 1;
+    var links = sh.getRange(2, LINK_COL, n, 1).getValues();
+    var rng = sh.getRange(2, SITE_COL, n, 1);
+    var cur = rng.getValues();
+    var changed = false;
+    for (var r = 0; r < n; r++) {
+      var k = _normLink(links[r][0]);
+      if (!k || !wanted.hasOwnProperty(k)) continue;
+      if (String(cur[r][0]).trim() === wanted[k]) continue;
+      cur[r][0] = wanted[k];
+      changed = true;
+      updated++;
+    }
+    if (changed) rng.setValues(cur);
+  }
+  return { ok: true, updated: updated };
 }
 
 /**
@@ -444,11 +575,20 @@ function _ensureColorRules(sh) {
       .build());
   }
 
-  rules.push(SpreadsheetApp.newConditionalFormatRule()
-    .whenFormulaSatisfied('=$I2="' + SITE_OK + '"')
-    .setBackground(PR_GREEN)
-    .setRanges([nositeRng])
-    .build());
+  // «На сайте»: зелёное — работает, синее — ждёт человека, жёлтое — снято,
+  // красное — всё остальное (не вышло, удалено). Порядок важен: первое
+  // подошедшее правило выигрывает, поэтому общее красное идёт последним.
+  var sitePairs = [
+    [SITE_CATALOG, PR_GREEN], [SITE_OK, PR_GREEN],
+    [SITE_REVIEW, PR_BLUE], [SITE_OFF, PR_YELLOW],
+  ];
+  for (var k = 0; k < sitePairs.length; k++) {
+    rules.push(SpreadsheetApp.newConditionalFormatRule()
+      .whenFormulaSatisfied('=$I2="' + sitePairs[k][0] + '"')
+      .setBackground(sitePairs[k][1])
+      .setRanges([nositeRng])
+      .build());
+  }
   rules.push(SpreadsheetApp.newConditionalFormatRule()
     .whenFormulaSatisfied('=LEN($I2)>0')
     .setBackground(RED)
@@ -490,11 +630,11 @@ function _safePresence(v) {
   return PRESENCES.indexOf(s) === -1 ? '' : s;
 }
 
-/** Значение колонки «На сайте»: только «Опубликовано», «Не вышло» или пусто. */
+/** Значение колонки «На сайте»: одно из известных состояний или пусто. */
 function _safeSite(v) {
   var s = String(v == null ? '' : v).trim();
   if (s === '') return '';
-  if (s === SITE_OK || s === SITE_FAIL) return s;
+  if (SITE_VALUES.indexOf(s) !== -1) return s;
   // Любое другое непустое значение (в т.ч. старое «Нет на сайте») = неудача.
   return SITE_FAIL;
 }

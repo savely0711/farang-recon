@@ -55,7 +55,11 @@ CRM_TAB = "CRM"
 
 # Значения колонки «На сайте» (этап 4). Держим здесь, чтобы не расходились
 # с apps_script.gs — там ровно те же две строки.
-SITE_OK = "Опубликовано"
+SITE_OK = "Опубликовано"       # ушло на сайт (сразу после прогона)
+SITE_CATALOG = "В каталоге"    # ночная сверка: одобрено, люди его видят
+SITE_REVIEW = "Ждёт модератора"  # ночная сверка: лежит в очереди на проверку
+SITE_OFF = "Снято"             # ночная сверка: снято модерацией/продавцом/по сроку
+SITE_GONE = "Удалено"          # ночная сверка: удалено насовсем (в т.ч. дубль)
 SITE_FAIL = "Не вышло"
 
 # Сколько раз пробуем записать одну пачку, прежде чем сдаться (с паузами между).
@@ -200,6 +204,72 @@ class Sheet:
     def mark_no_site(self, link: str, value: str = SITE_FAIL) -> bool:
         """Старое имя `set_site_result` — оставлено, чтобы не ломать вызовы."""
         return self.set_site_result(link, value)
+
+    def read_placed(self):
+        """РАЗМЕЩЁННЫЕ ОБЪЯВЛЕНИЯ для ночной сверки: строки, у которых колонка
+        «На сайте» заполнена и состояние ещё может измениться (то есть кроме
+        «Не вышло» и «Удалено»).
+
+        Возвращает список словарей {"link", "site"}; None — не удалось."""
+        return self._get_list("placed", "rows", "список размещённых")
+
+    def read_nicks(self):
+        """Все ники таблицы без повторов — чтобы спросить у сайта, кто из них
+        уже зарегистрировался. None — не удалось."""
+        return self._get_list("nicks", "nicks", "список ников")
+
+    def _get_list(self, action: str, field: str, note: str):
+        params = {"action": action, "token": self._token}
+        for attempt in range(MAX_RETRIES):
+            try:
+                r = self._client.get(self._url, params=params)
+                r.raise_for_status()
+                data = r.json()
+                if not data.get("ok"):
+                    raise RuntimeError(f"Apps Script вернул ошибку: {data}")
+                return data.get(field) or []
+            except Exception as e:  # noqa: BLE001
+                print(f"  ⚠ {note} не получен "
+                      f"(попытка {attempt + 1}/{MAX_RETRIES}): {e}")
+                if attempt < MAX_RETRIES - 1:
+                    time.sleep(RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)])
+        return None
+
+    def set_site_bulk(self, rows: list) -> int:
+        """Пишет колонку «На сайте» ПАЧКОЙ: [{"link", "value"}, …].
+        Возвращает число реально изменённых строк (0 — либо нечего менять,
+        либо не удалось)."""
+        if not rows:
+            return 0
+        payload = {"token": self._token, "action": "sitebulk", "rows": rows}
+        data = self._post_json(payload, note=f"состояния {len(rows)} строк")
+        return int((data or {}).get("updated") or 0)
+
+    def set_consent_bulk(self, rows: list) -> int:
+        """Пишет пачку событий в реестр согласий: [{"nick","status","reason"}].
+        Возвращает число изменённых записей."""
+        if not rows:
+            return 0
+        payload = {"token": self._token, "action": "consentbulk", "rows": rows}
+        data = self._post_json(payload, note=f"согласия {len(rows)} человек")
+        return int((data or {}).get("changed") or 0)
+
+    def _post_json(self, payload: dict, note: str):
+        """POST с повторами, который отдаёт ОТВЕТ (а не только True/False)."""
+        for attempt in range(MAX_RETRIES):
+            try:
+                r = self._client.post(self._url, json=payload)
+                r.raise_for_status()
+                data = r.json()
+                if not data.get("ok"):
+                    raise RuntimeError(f"Apps Script вернул ошибку: {data}")
+                return data
+            except Exception as e:  # noqa: BLE001
+                print(f"  ⚠ не записалось ({note}, "
+                      f"попытка {attempt + 1}/{MAX_RETRIES}): {e}")
+                if attempt < MAX_RETRIES - 1:
+                    time.sleep(RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)])
+        return None
 
     def read_todo(self, limit: int = 50, days: int = 0):
         """ОЧЕРЕДЬ АВТО-ПОДГОТОВКИ (этап 4): объявления людей со статусом
