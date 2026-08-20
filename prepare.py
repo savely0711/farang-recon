@@ -36,7 +36,9 @@
 Настройки (.env):
     SITE_API_URL          — адрес точки приёма сайта (…/api/recon)
     RECON_API_TOKEN       — общий пароль-токен с сайтом
-    PREPARE_LIMIT         — сколько объявлений за один запуск (по умолчанию 30)
+    PREPARE_LIMIT         — сколько объявлений за один запуск (по умолчанию 30;
+                            то же самое можно задать числом в аргументах:
+                            python3 prepare.py 300)
     PREPARE_MAX_AGE_DAYS  — не трогать посты старше стольких дней (по умолч. 30)
     PREPARE_MAX_PHOTOS    — сколько фото брать из альбома (по умолчанию 6)
 """
@@ -59,14 +61,22 @@ from sheets import SITE_FAIL, SITE_OK, Sheet
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
-LIMIT = int(os.environ.get("PREPARE_LIMIT", "30"))
 MAX_AGE_DAYS = int(os.environ.get("PREPARE_MAX_AGE_DAYS", "30"))
 MAX_PHOTOS = int(os.environ.get("PREPARE_MAX_PHOTOS", "6"))
-# Тестовый режим: переменная PREPARE_DRY=1 ЛИБО слово «dry» первым аргументом.
-# Второе — ради консоли сервера Aeza: там не вводятся заглавные буквы и «_»,
-# то есть строку PREPARE_DRY=1 руками не набрать, а «dry» — легко.
-DRY = (os.environ.get("PREPARE_DRY") == "1"
-       or (len(sys.argv) > 1 and sys.argv[1].strip().lower() == "dry"))
+
+# Аргументы командной строки — ради консоли сервера Aeza: там не вводятся
+# заглавные буквы и «_», то есть строку PREPARE_LIMIT=300 руками не набрать.
+# Поэтому понимаем простые слова и числа, в любом порядке:
+#   python3 prepare.py            — как задано в .env (по умолчанию 30 штук)
+#   python3 prepare.py 300        — разобрать до 300 объявлений за прогон
+#   python3 prepare.py dry        — холостой ход, на сайт ничего не уходит
+#   python3 prepare.py dry 50     — и то, и другое
+_ARGS = [a.strip().lower() for a in sys.argv[1:]]
+DRY = os.environ.get("PREPARE_DRY") == "1" or "dry" in _ARGS
+LIMIT = int(os.environ.get("PREPARE_LIMIT", "30"))
+for _a in _ARGS:
+    if _a.isdigit() and int(_a) > 0:
+        LIMIT = int(_a)
 
 DELAY_BETWEEN_POSTS = 3.0   # сек: читаем не спеша, как человек
 PHOTO_MAX_SIDE = 1600       # px: больше на карточке всё равно не нужно
