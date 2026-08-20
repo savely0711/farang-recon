@@ -19,6 +19,15 @@
 
 ЗАЩИТА ОТ ДУБЛЕЙ ДВОЙНАЯ: пометка в таблице и уникальная ссылка на исходный
 пост в базе сайта (db/32). Даже двойной запуск не создаст второе объявление.
+Если объявление ещё ждёт модератора, повторная присылка ПЕРЕСОБЕРЁТ его —
+так дозаполняются карточки, сделанные более старой версией разбора. Как только
+человек его посмотрел (одобрил, снял, вернул на доработку), автоматика больше
+не вмешивается.
+
+Что заполняется в карточке, кроме текста и цены: подкатегория сайта, район
+Паттайи и признаки раздела (спальни, площадь, пробег, коробка…). Справочник
+для этого берётся С САЙТА (действие schema), а не хранится копией здесь —
+иначе списки разъедутся при первом же изменении каталога.
 
 ЗАПУСК (на сервере Aeza):
     python3 prepare.py        # обычный прогон
@@ -146,9 +155,29 @@ class Site:
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "error": f"сайт не ответил: {e}"}
 
+    def schema(self) -> dict:
+        """Справочник сайта: подкатегории, районы, признаки разделов.
+
+        Держим его НА САЙТЕ, а не копией здесь: заведут новую подкатегорию или
+        признак — ИИ узнает о нём со следующего прогона сам. Не отдался —
+        работаем без него (карточка соберётся, просто без признаков)."""
+        try:
+            r = self._client.post(self.url, json={"token": self.token,
+                                                  "action": "schema"})
+            r.raise_for_status()
+            data = r.json()
+            if not data.get("ok"):
+                raise RuntimeError(data)
+            return data
+        except Exception as e:  # noqa: BLE001
+            print(f"⚠ справочник сайта не получен ({e}) — "
+                  f"признаки и район заполнены не будут.")
+            return {}
+
 
 # ─────────────────────────── ПРОГОН ───────────────────────────
-async def process_row(client, site, sheet, row: dict, stats: dict) -> None:
+async def process_row(client, site, sheet, row: dict, stats: dict,
+                      schema: dict) -> None:
     link = row.get("link") or ""
     nick = row.get("nick") or ""
     m = LINK_RE.match(link)
@@ -176,7 +205,7 @@ async def process_row(client, site, sheet, row: dict, stats: dict) -> None:
     if not text.strip():
         return fail("в посте нет текста")
 
-    card = build_listing(text)
+    card = build_listing(text, schema)
     if not card["ok"]:
         return fail(card["reason"])
 
@@ -189,8 +218,12 @@ async def process_row(client, site, sheet, row: dict, stats: dict) -> None:
         else "договорная" if card["is_negotiable"]
         else f"{card['price_thb']} ฿"
     )
-    print(f"    «{card['title']}» · {card['category']} · {price} · "
-          f"фото: {len(photos)}")
+    what = card.get("subcategory") or card["category"]
+    where = f" · {card['district']}" if card.get("district") else ""
+    attrs = card.get("attrs") or {}
+    marks = f" · признаков: {len(attrs)}" if attrs else ""
+    print(f"    «{card['title']}» · {what}{where} · {price} · "
+          f"фото: {len(photos)}{marks}")
 
     if DRY:
         stats["dry"] += 1
@@ -205,6 +238,9 @@ async def process_row(client, site, sheet, row: dict, stats: dict) -> None:
         "is_free": card["is_free"],
         "is_negotiable": card["is_negotiable"],
         "category_slug": card["category"],
+        "subcategory_slug": card.get("subcategory"),
+        "district_slug": card.get("district"),
+        "attrs": attrs,
         "photos": photos,
     })
 
@@ -212,7 +248,7 @@ async def process_row(client, site, sheet, row: dict, stats: dict) -> None:
         return fail(f"сайт отказал: {res.get('error')}")
     if res.get("duplicate"):
         stats["dup"] += 1
-        print("    ↩ уже было на сайте — помечаю строку")
+        print("    ↩ модератор его уже смотрел — не трогаю, помечаю строку")
         sheet.set_site_result(link, SITE_OK)
         return
     if res.get("verdict") == "reject":
@@ -247,6 +283,11 @@ async def main() -> int:
           f"(потолок {LIMIT}, не старше {MAX_AGE_DAYS} дн.)")
 
     stats = {"ok": 0, "fail": 0, "dup": 0, "rejected": 0, "dry": 0}
+    schema = site.schema() if site.ready else {}
+    if schema:
+        print(f"📚 справочник сайта получен: подкатегорий "
+              f"{len(schema.get('subcategories') or [])}, районов "
+              f"{len(schema.get('districts') or [])}")
 
     api_id = int(os.environ["TG_API_ID"])
     api_hash = os.environ["TG_API_HASH"]
@@ -257,7 +298,7 @@ async def main() -> int:
         print(f"🔑 вошёл как {me.first_name} (id {me.id})")
         for i, row in enumerate(rows):
             try:
-                await process_row(client, site, sheet, row, stats)
+                await process_row(client, site, sheet, row, stats, schema)
             except FloodWaitError as e:
                 print(f"  ⏳ Telegram просит подождать {e.seconds}с — стоп на сегодня")
                 break

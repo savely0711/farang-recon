@@ -193,6 +193,47 @@ card = build.build_listing("Продам айфон 13, 15000 бат, пишит
 check("карточка собрана", card["ok"] and card["title"] == "iPhone 13 128 ГБ",
       json.dumps(card, ensure_ascii=False))
 check("цена числом", card["price_thb"] == 15000 and not card["is_free"])
+check("без подкатегории и признаков карточка всё равно валидна",
+      card["subcategory"] is None and card["district"] is None and card["attrs"] == {})
+
+# Подкатегория, район и признаки (справочник приходит с сайта)
+SCHEMA = {
+    "subcategories": [{"slug": "realty-condo", "name": "Квартиры и кондо",
+                       "section": "realty"}],
+    "districts": [{"slug": "jomtien", "name": "Джомтьен"}],
+    "attrs": {"realty": [
+        {"key": "deal", "type": "select", "name": "Тип сделки", "unit": None,
+         "subcats": "*", "showIf": None,
+         "options": [{"value": "rent", "name": "Аренда"}]},
+        {"key": "bedrooms", "type": "select", "name": "Спальни", "unit": None,
+         "subcats": ["realty-condo"], "showIf": None,
+         "options": [{"value": "2", "name": "2"}]},
+    ]},
+}
+hint = build._schema_hint(SCHEMA)
+check("в подсказку попали подкатегории", "realty-condo: Квартиры и кондо" in hint, hint)
+check("в подсказку попали районы", "jomtien — Джомтьен" in hint)
+check("в подсказку попали признаки и их варианты",
+      "bedrooms (select)" in hint and "rent=Аренда" in hint)
+check("ограничение признака по подкатегории видно",
+      "только для: realty-condo" in hint)
+check("пустой справочник не ломает подсказку", build._schema_hint({}) == "")
+
+fake_ai('{"ok": true, "title": "Кондо 2 спальни", "description": "У моря.",'
+        ' "price_thb": null, "is_free": false, "is_negotiable": true,'
+        ' "category": "realty", "subcategory": "realty-condo",'
+        ' "district": "jomtien", "attrs": {"deal": "rent", "bedrooms": "2"}}')
+full = build.build_listing("Сдам кондо 2 спальни в Джомтьене, договорная", SCHEMA)
+check("подкатегория и район дошли",
+      full["subcategory"] == "realty-condo" and full["district"] == "jomtien",
+      json.dumps(full, ensure_ascii=False))
+check("признаки дошли", full["attrs"] == {"deal": "rent", "bedrooms": "2"})
+
+fake_ai('{"ok": true, "title": "Стол", "description": "", "price_thb": 500,'
+        ' "is_free": false, "is_negotiable": false, "category": "furniture",'
+        ' "attrs": "не объект"}')
+bad = build.build_listing("Продам стол 500 бат")
+check("мусор вместо признаков не роняет разбор", bad["ok"] and bad["attrs"] == {})
 
 fake_ai('{"ok": false}')
 check("не объявление — отказ", not build.build_listing("Кто знает хорошего врача?")["ok"])

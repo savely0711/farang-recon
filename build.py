@@ -55,13 +55,70 @@ _SYSTEM = (
     "- is_free: true, если отдают даром/бесплатно.\n"
     "- is_negotiable: true, если цена «договорная» и числа нет.\n"
     "- category: slug по сути предмета.\n"
+    "- subcategory: точная подкатегория сайта из списка ниже (slug). Если "
+    "подходящей нет — null.\n"
+    "- district: район Паттайи из списка ниже (slug), если он назван или "
+    "однозначно понятен из поста. Не уверен — null. НЕ УГАДЫВАЙ.\n"
+    "- attrs: объект с признаками из списка ниже — только те, что явно "
+    "следуют из текста поста. Ключи и значения брать РОВНО те, что даны "
+    "(для select — value, для multiselect — список value, для чисел — "
+    "число без единиц). Чего в посте нет — не выдумывай, просто пропусти.\n"
     "- ok: false, если это НЕ объявление о продаже/аренде/услуге (болтовня, "
     "«куплю», «ищу», отзыв), либо если из поста невозможно понять, что "
     "продаётся. В этом случае остальные поля можно оставить пустыми.\n\n"
     "Ответь ТОЛЬКО JSON, без пояснений:\n"
     '{"ok": bool, "title": "…", "description": "…", "price_thb": number|null, '
-    '"is_free": bool, "is_negotiable": bool, "category": "slug"}'
+    '"is_free": bool, "is_negotiable": bool, "category": "slug", '
+    '"subcategory": "slug"|null, "district": "slug"|null, "attrs": {}}'
 )
+
+
+def _schema_hint(schema: dict) -> str:
+    """Человекочитаемый кусок подсказки: подкатегории, районы, признаки.
+
+    Справочник приходит С САЙТА (действие schema точки /api/recon), а не лежит
+    копией здесь — чтобы новые подкатегории и признаки подхватывались сами.
+    Пустой справочник = подсказки нет, ИИ просто не заполнит эти поля.
+    """
+    if not schema:
+        return ""
+    lines = []
+
+    subs = schema.get("subcategories") or []
+    if subs:
+        lines.append("\nПОДКАТЕГОРИИ САЙТА (поле subcategory, выбери одну):")
+        for s in subs:
+            sec = s.get("section") or "—"
+            lines.append(f"- {s['slug']}: {s['name']} (раздел {sec})")
+
+    dists = schema.get("districts") or []
+    if dists:
+        lines.append("\nРАЙОНЫ ПАТТАЙИ (поле district):")
+        lines.append(", ".join(f"{d['slug']} — {d['name']}" for d in dists))
+
+    attrs = schema.get("attrs") or {}
+    if attrs:
+        lines.append("\nПРИЗНАКИ (поле attrs). Применять только к своему разделу:")
+        for section, defs in attrs.items():
+            lines.append(f"  Раздел {section}:")
+            for d in defs:
+                bits = [f"    {d['key']} ({d['type']}) — {d['name']}"]
+                if d.get("unit"):
+                    bits.append(f", в {d['unit']}")
+                subcats = d.get("subcats")
+                if subcats and subcats != "*":
+                    bits.append(f"; только для: {', '.join(subcats)}")
+                show = d.get("showIf")
+                if show:
+                    bits.append(
+                        f"; только если {show['key']} = {'/'.join(show['values'])}")
+                opts = d.get("options")
+                if opts:
+                    bits.append("; варианты: "
+                                + ", ".join(f"{o['value']}={o['name']}" for o in opts))
+                lines.append("".join(bits))
+
+    return "\n".join(lines)
 
 
 def _get_client() -> Anthropic:
@@ -71,7 +128,7 @@ def _get_client() -> Anthropic:
     return _client
 
 
-def build_listing(text: str) -> dict:
+def build_listing(text: str, schema: dict | None = None) -> dict:
     """
     Готовит карточку из текста поста.
 
@@ -81,7 +138,8 @@ def build_listing(text: str) -> dict:
     """
     fail = {"ok": False, "reason": "", "title": "", "description": "",
             "price_thb": None, "is_free": False, "is_negotiable": False,
-            "category": "other"}
+            "category": "other", "subcategory": None, "district": None,
+            "attrs": {}}
 
     text = (text or "").strip()
     if not text:
@@ -91,7 +149,7 @@ def build_listing(text: str) -> dict:
         resp = _get_client().messages.create(
             model=_MODEL,
             max_tokens=2000,
-            system=_SYSTEM,
+            system=_SYSTEM + _schema_hint(schema or {}),
             messages=[{"role": "user", "content": text[:6000]}],
         )
         # Обрыв по лимиту токенов даёт неполный JSON — ловим это отдельно,
@@ -129,6 +187,12 @@ def build_listing(text: str) -> dict:
     if price is not None:
         is_negotiable = False
 
+    sub = data.get("subcategory")
+    district = data.get("district")
+    attrs = data.get("attrs")
+    if not isinstance(attrs, dict):
+        attrs = {}
+
     return {
         "ok": True,
         "reason": "",
@@ -138,6 +202,11 @@ def build_listing(text: str) -> dict:
         "is_free": is_free,
         "is_negotiable": is_negotiable,
         "category": category,
+        # Значения не проверяем здесь: сайт всё равно чистит их по своему
+        # конфигу (sanitizeAttrs) — двойная проверка только разъедется.
+        "subcategory": str(sub).strip() if sub else None,
+        "district": str(district).strip() if district else None,
+        "attrs": attrs,
     }
 
 
