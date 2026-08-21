@@ -46,6 +46,7 @@ function makeSheet(name, maxRows, maxCols) {
       const r = this.getLastRow();
       grid[r] = values.slice();
     },
+    deleteRow(row) { grid.splice(row - 1, 1); },
     getRange(row, col, nRows, nCols) {
       nRows = nRows === undefined ? 1 : nRows;
       nCols = nCols === undefined ? 1 : nCols;
@@ -76,6 +77,12 @@ function makeSheet(name, maxRows, maxCols) {
           }
         },
         setValue(v) { this.setValues([[v]]); },
+        getValue() { return this.getValues()[0][0]; },
+        getSheet() { return sh; },
+        getRow() { return row; },
+        getLastRow() { return row + nRows - 1; },
+        getColumn() { return col; },
+        getLastColumn() { return col + nCols - 1; },
         setDataValidation() {},
       };
     },
@@ -85,6 +92,7 @@ function makeSheet(name, maxRows, maxCols) {
 
 const SS = {
   _sheets: [],
+  toast(msg) { console.log('   toast:', msg); },
   getSheetByName(n) { return this._sheets.find((s) => s.getName() === n) || null; },
   insertSheet(n, pos) {
     const sh = makeSheet(n);
@@ -97,7 +105,7 @@ const SS = {
 function builder(obj) { return obj; }
 const SpreadsheetApp = {
   getActiveSpreadsheet: () => SS,
-  getActive: () => ({ toast: (msg) => console.log('   toast:', msg) }),
+  getActive: () => SS,
   newDataValidation: () => {
     const b = {};
     b.requireValueInList = () => b;
@@ -370,6 +378,66 @@ check('в строке появился статус «зарегистриро�
 check('отказ пакетом не понижается',
   post({ token: 'T', action: 'consentbulk', rows: [{ nick: 'ivan', status: 'зарегистрирован' }] }).changed === 0 &&
   dumpConsent().find((r) => r[0] === 'ivan')[1] === 'отказ');
+
+console.log('\n18. Ручная правка «Присутствия» разъезжается по всем строкам ника');
+// Три объявления одного человека и одно чужое.
+post({ token: 'T', action: 'append', rows: [
+  { author: 'anna', link: 'https://t.me/g/60', channel: 'Барахолка', category: 'Мебель', category_slug: 'furniture', date: '2026-08-20 10:00', snippet: 'Стол', seller_type: 'частник' },
+  { author: 'anna', link: 'https://t.me/g/61', channel: 'Барахолка', category: 'Мебель', category_slug: 'furniture', date: '2026-08-20 10:05', snippet: 'Стул', seller_type: 'частник' },
+  { author: 'anna', link: 'https://t.me/g/62', channel: 'Барахолка', category: 'Мебель', category_slug: 'furniture', date: '2026-08-20 10:10', snippet: 'Шкаф', seller_type: 'частник' },
+  { author: 'boris', link: 'https://t.me/g/63', channel: 'Барахолка', category: 'Мебель', category_slug: 'furniture', date: '2026-08-20 10:15', snippet: 'Диван', seller_type: 'частник' },
+] });
+
+const crmSheet = SS.getSheetByName(CRM);
+function rowsOf(nick) { return dump(CRM).filter((r) => r[0] === nick); }
+function editPresence(nick, value) {
+  // находим ПЕРВУЮ строку человека и правим её, как это сделал бы Савелий мышью
+  const all = dump(CRM);
+  const idx = all.findIndex((r) => r[0] === nick);
+  const rowNo = idx + 2; // +1 шапка, +1 нумерация с единицы
+  const range = crmSheet.getRange(rowNo, 8);
+  range.setValue(value);
+  vm.runInContext('onEdit', ctx)({ range });
+}
+
+editPresence('anna', 'согласен');
+check('значение разошлось по всем строкам ника',
+  rowsOf('anna').length === 3 && rowsOf('anna').every((r) => r[7] === 'согласен'),
+  JSON.stringify(rowsOf('anna')));
+check('чужие строки не тронуты', rowsOf('boris').every((r) => r[7] !== 'согласен'));
+check('появилась запись в реестре',
+  (dumpConsent().find((r) => r[0] === 'anna') || [])[1] === 'согласен', JSON.stringify(dumpConsent()));
+
+// Ручная правка СИЛЬНЕЕ автоматики: сначала автоматика ставит «отказ»…
+post({ token: 'T', action: 'consent', nick: 'anna', status: 'отказ', reason: 'сказала стоп' });
+check('автоматика поставила отказ', rowsOf('anna').every((r) => r[7] === 'отказ'));
+// …а человек руками возвращает «согласен» — и это должно победить
+editPresence('anna', 'согласен');
+check('ручная правка перебивает отказ',
+  rowsOf('anna').every((r) => r[7] === 'согласен') &&
+  (dumpConsent().find((r) => r[0] === 'anna') || [])[1] === 'согласен',
+  JSON.stringify(dumpConsent()));
+
+// Очистка ячейки = человек снова «чистый»
+editPresence('anna', '');
+check('пустое значение разошлось по строкам',
+  rowsOf('anna').every((r) => String(r[7] || '') === ''), JSON.stringify(rowsOf('anna')));
+check('запись из реестра удалена',
+  !dumpConsent().some((r) => r[0] === 'anna'), JSON.stringify(dumpConsent()));
+
+// Опечатку не разносим
+editPresence('anna', 'сагласен');
+check('мусорное значение остаётся в одной ячейке',
+  rowsOf('anna').filter((r) => r[7] === 'сагласен').length === 1);
+editPresence('anna', '');
+
+// Правка в чужой колонке триггер не будит
+const before = JSON.stringify(dump(CRM));
+const other = crmSheet.getRange(2, 6);
+other.setValue('какое-то описание');
+vm.runInContext('onEdit', ctx)({ range: other });
+check('правка другой колонки ничего не разносит',
+  dump(CRM).filter((r) => r[0] === 'anna').every((r) => String(r[7] || '') === ''));
 
 console.log(failed === 0 ? '\n🏁 ВСЁ ЗЕЛЁНОЕ\n' : `\n⛔ ПРОВАЛЕНО ПРОВЕРОК: ${failed}\n`);
 process.exit(failed === 0 ? 0 : 1);

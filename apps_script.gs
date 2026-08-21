@@ -58,6 +58,9 @@
  *   GET  ?action=nicks — все ники таблицы (для сверки, кто зарегистрировался);
  *   POST {action:"sitebulk", rows:[{link,value}]} — пакетная запись «На сайте»;
  *   POST {action:"consentbulk", rows:[{nick,status,reason}]} — пакет согласий;
+ *
+ * Плюс простой триггер onEdit: ручная правка «Присутствия» разъезжается по всем
+ * строкам ника и перебивает реестр согласий (человек главнее автоматики).
  *   GET                   — проверка «живой ли» (alive).
  * Во всех запросах обязателен общий пароль-токен (token), кроме простого alive.
  *
@@ -415,6 +418,91 @@ function _readTodo(tabs, limit, days) {
 
   out.sort(function (a, b) { return b.time - a.time; });
   return out.slice(0, limit);
+}
+
+// ───────────── РУЧНАЯ ПРАВКА «ПРИСУТСТВИЯ» (простой триггер) ─────────────
+/**
+ * Савелий поменял «Присутствие» в одной строке — значение разъезжается по ВСЕМ
+ * строкам этого ника и попадает в реестр согласий.
+ *
+ * Зачем. Строка = объявление, поэтому у активного продавца их десятки. Раньше
+ * правка одной ячейки не значила ничего: остальные строки оставались с прежним
+ * статусом, а реестр (единственный источник правды о согласии) вообще не знал о
+ * ней — и первое же событие с сайта или ночная сверка возвращали всё назад.
+ *
+ * РУЧНАЯ ПРАВКА СИЛЬНЕЕ ВСЕГО (решение Савелия 20.08.2026): она перебивает
+ * реестр даже «вниз» — можно снять «отказ» или вернуть «согласен». Автоматика
+ * по-прежнему сильный статус слабым не понижает, это правило только для
+ * человека. Очистили ячейку — очищается у всего ника, а запись из реестра
+ * удаляется: человек снова «чистый», как будто его не трогали.
+ *
+ * Это ПРОСТОЙ триггер: срабатывает сам при ручном редактировании и начинает
+ * работать сразу после сохранения кода — новая версия развёртывания для него не
+ * нужна (она нужна только веб-приложению `/exec`). На правки, сделанные
+ * скриптом, он не реагирует — поэтому размножение значения не зацикливается.
+ */
+function onEdit(e) {
+  try {
+    if (!e || !e.range) return;
+    var sh = e.range.getSheet();
+    var name = sh.getName();
+    if (name !== CRM_TAB && name !== AGENCY_TAB) return;
+
+    // Правка может быть и диапазоном (вставили сразу в несколько ячеек).
+    if (e.range.getColumn() > PRESENCE_COL || e.range.getLastColumn() < PRESENCE_COL) {
+      return;
+    }
+    var first = Math.max(2, e.range.getRow());
+    var last = e.range.getLastRow();
+    if (last < first) return;
+
+    var tabs = _tabsLight();
+    if (!tabs) return;
+    var seen = {};
+    for (var r = first; r <= last; r++) {
+      var nick = _normNick(sh.getRange(r, NICK_COL).getValue());
+      if (!nick || seen[nick]) continue;
+      seen[nick] = true;
+
+      var raw = String(sh.getRange(r, PRESENCE_COL).getValue() || '').trim();
+      var value = _safePresence(raw);
+      // Непонятное значение (опечатка) не разносим — пусть висит в одной ячейке.
+      if (raw !== '' && !value) continue;
+
+      _setForNick(tabs, nick, PRESENCE_COL, value);
+      _forceConsent(tabs, nick, value);
+    }
+  } catch (err) {
+    // Триггер не должен мешать человеку работать с таблицей: молчим.
+  }
+}
+
+/** Вкладки без создания и переоформления — для триггера, который должен быть быстрым. */
+function _tabsLight() {
+  var ss = SpreadsheetApp.getActive();
+  var crm = ss.getSheetByName(CRM_TAB);
+  var agency = ss.getSheetByName(AGENCY_TAB);
+  if (!crm) return null;
+  return { crm: crm, agency: agency || crm, consent: ss.getSheetByName(CONSENT_TAB) };
+}
+
+/**
+ * Записать статус в реестр СИЛОЙ, не глядя на «силу» прежнего: так работает
+ * только ручная правка. Пустое значение = удалить человека из реестра.
+ */
+function _forceConsent(tabs, nick, status) {
+  var sh = tabs.consent;
+  if (!sh) return;
+  var map = _readConsents(sh);
+  var cur = map[nick];
+
+  if (!status) {
+    if (cur) sh.deleteRow(cur.row);
+    return;
+  }
+  var row = [status, _today(), 'правка руками в таблице'];
+  if (cur) sh.getRange(cur.row, C_STATUS_COL, 1, 3).setValues([row]);
+  else sh.appendRow([nick].concat(row));
 }
 
 // ─────────────────────────── ВКЛАДКИ ───────────────────────────
