@@ -221,8 +221,8 @@ res = post({ token: 'T', action: 'nosite', link: 'https://t.me/g/2', value: 'Н�
 check('покрашено одно объявление', res.found === 1, JSON.stringify(res));
 check('пометка стоит там, где надо', dump(CRM).find((r) => r[1] === 'https://t.me/g/2')[8] === 'Не вышло');
 check('у соседнего объявления Ивана пусто', dump(CRM).find((r) => r[1] === 'https://t.me/g/1')[8] === '');
-res = post({ token: 'T', action: 'site', link: 'https://t.me/g/1', value: 'Опубликовано' });
-check('успех пишется отдельным значением', dump(CRM).find((r) => r[1] === 'https://t.me/g/1')[8] === 'Опубликовано', JSON.stringify(res));
+res = post({ token: 'T', action: 'site', link: 'https://t.me/g/1', value: 'Ждёт модератора' });
+check('успех пишется отдельным значением', dump(CRM).find((r) => r[1] === 'https://t.me/g/1')[8] === 'Ждёт модератора', JSON.stringify(res));
 post({ token: 'T', action: 'site', link: 'https://t.me/g/1', value: 'что-то своё' });
 check('мусорное значение = «Не вышло»', dump(CRM).find((r) => r[1] === 'https://t.me/g/1')[8] === 'Не вышло');
 
@@ -342,11 +342,16 @@ console.log('\n17. Ночная сверка с сайтом');
 post({ token: 'T', action: 'append', rows: [
   { author: 'petr', link: 'https://t.me/g/50', channel: 'Барахолка', category: 'Электроника', category_slug: 'electronics', date: '2026-08-20 10:00', snippet: 'Ноутбук', seller_type: 'частник' },
 ] });
-post({ token: 'T', action: 'site', link: 'https://t.me/g/50', value: 'Опубликовано' });
+post({ token: 'T', action: 'site', link: 'https://t.me/g/50', value: 'Ждёт модератора' });
 let placed = get({ action: 'placed', token: 'T' }).rows;
 check('размещённые отдаются со ссылкой и статусом',
-  placed.length === 1 && placed[0].link === 'https://t.me/g/50' && placed[0].site === 'Опубликовано',
+  placed.length === 1 && placed[0].link === 'https://t.me/g/50' && placed[0].site === 'Ждёт модератора',
   JSON.stringify(placed));
+// «Опубликовано» из первых версий отдельным состоянием больше не живёт
+post({ token: 'T', action: 'site', link: 'https://t.me/g/50', value: 'Опубликовано' });
+check('старое «Опубликовано» превращается в «Ждёт модератора»',
+  dump(CRM).find((r) => r[1] === 'https://t.me/g/50')[8] === 'Ждёт модератора',
+  JSON.stringify(dump(CRM).find((r) => r[1] === 'https://t.me/g/50')));
 check('placed с чужим токеном', get({ action: 'placed', token: 'X' }).ok === false);
 
 // Сверка сказала: объявление в каталоге.

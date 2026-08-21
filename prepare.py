@@ -57,7 +57,7 @@ from telethon.sessions import StringSession
 
 from build import build_listing
 from phash import fingerprint
-from sheets import SITE_FAIL, SITE_OK, Sheet
+from sheets import SITE_FAIL, SITE_REVIEW, Sheet
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
@@ -266,7 +266,7 @@ async def process_row(client, site, sheet, row: dict, stats: dict,
     if res.get("duplicate"):
         stats["dup"] += 1
         print("    ↩ модератор его уже смотрел — не трогаю, помечаю строку")
-        sheet.set_site_result(link, SITE_OK)
+        sheet.set_site_result(link, SITE_REVIEW)
         return
     if res.get("verdict") == "reject":
         stats["rejected"] += 1
@@ -276,7 +276,7 @@ async def process_row(client, site, sheet, row: dict, stats: dict,
 
     stats["ok"] += 1
     print("    ✅ на сайте, ждёт модератора")
-    sheet.set_site_result(link, SITE_OK)
+    sheet.set_site_result(link, SITE_REVIEW)
 
 
 async def main() -> int:
