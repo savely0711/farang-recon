@@ -445,6 +445,28 @@ check('но согласие в реестре осталось',
   (dumpConsent().find((r) => r[0] === 'anna') || [])[1] === 'согласен', JSON.stringify(dumpConsent()));
 editPresence('anna', '');
 
+// «Написали?» — тоже статус человека: расходится по всем его строкам
+function editWritten(nick, value) {
+  const all = dump(CRM);
+  const idx = all.findIndex((r) => r[0] === nick);
+  const range = crmSheet.getRange(idx + 2, 7);
+  range.setValue(value);
+  vm.runInContext('onEdit', ctx)({ range });
+}
+editWritten('anna', 'Да');
+check('«Написали? = Да» разошлось по всем строкам ника',
+  rowsOf('anna').length === 3 && rowsOf('anna').every((r) => r[6] === 'Да'),
+  JSON.stringify(rowsOf('anna')));
+check('чужие строки не тронуты', rowsOf('boris').every((r) => r[6] !== 'Да'));
+check('реестр согласий от «Написали?» не меняется',
+  !dumpConsent().some((r) => r[0] === 'anna'), JSON.stringify(dumpConsent()));
+editWritten('anna', 'Не доставлено');
+check('другие значения тоже расходятся',
+  rowsOf('anna').every((r) => r[6] === 'Не доставлено'));
+editWritten('anna', 'абвгд');
+check('опечатка в «Написали?» остаётся в одной ячейке',
+  rowsOf('anna').filter((r) => r[6] === 'абвгд').length === 1);
+
 // Правка в чужой колонке триггер не будит
 const before = JSON.stringify(dump(CRM));
 const other = crmSheet.getRange(2, 6);

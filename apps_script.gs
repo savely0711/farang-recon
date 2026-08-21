@@ -426,13 +426,17 @@ function _readTodo(tabs, limit, days) {
 
 // ───────────── РУЧНАЯ ПРАВКА «ПРИСУТСТВИЯ» (простой триггер) ─────────────
 /**
- * Савелий поменял «Присутствие» в одной строке — значение разъезжается по ВСЕМ
- * строкам этого ника и попадает в реестр согласий.
+ * Савелий поменял «Присутствие» или «Написали?» в одной строке — значение
+ * разъезжается по ВСЕМ строкам этого ника (а «Присутствие» ещё и попадает в
+ * реестр согласий).
  *
- * Зачем. Строка = объявление, поэтому у активного продавца их десятки. Раньше
- * правка одной ячейки не значила ничего: остальные строки оставались с прежним
- * статусом, а реестр (единственный источник правды о согласии) вообще не знал о
- * ней — и первое же событие с сайта или ночная сверка возвращали всё назад.
+ * Зачем. Строка = объявление, поэтому у активного продавца их десятки. Оба
+ * статуса — про ЧЕЛОВЕКА, а не про отдельное объявление: написали ему один раз,
+ * согласие он даёт один раз. Автоматика их так и проставляет — сразу всем
+ * строкам ника, — а ручная правка раньше меняла одну ячейку и не значила
+ * ничего: остальные строки оставались с прежним статусом, а реестр
+ * (единственный источник правды о согласии) вообще не знал о ней — и первое же
+ * событие с сайта или ночная сверка возвращали всё назад.
  *
  * РУЧНАЯ ПРАВКА СИЛЬНЕЕ ВСЕГО (решение Савелия 20.08.2026): она перебивает
  * реестр даже «вниз» — можно снять «отказ» или вернуть «согласен». Автоматика
@@ -453,9 +457,12 @@ function onEdit(e) {
     if (name !== CRM_TAB && name !== AGENCY_TAB) return;
 
     // Правка может быть и диапазоном (вставили сразу в несколько ячеек).
-    if (e.range.getColumn() > PRESENCE_COL || e.range.getLastColumn() < PRESENCE_COL) {
-      return;
-    }
+    var c1 = e.range.getColumn();
+    var c2 = e.range.getLastColumn();
+    var touchedPresence = c1 <= PRESENCE_COL && PRESENCE_COL <= c2;
+    var touchedWritten = c1 <= WRITTEN_COL && WRITTEN_COL <= c2;
+    if (!touchedPresence && !touchedWritten) return;
+
     var first = Math.max(2, e.range.getRow());
     var last = e.range.getLastRow();
     if (last < first) return;
@@ -468,13 +475,24 @@ function onEdit(e) {
       if (!nick || seen[nick]) continue;
       seen[nick] = true;
 
-      var raw = String(sh.getRange(r, PRESENCE_COL).getValue() || '').trim();
-      var value = _safePresence(raw);
-      // Непонятное значение (опечатка) не разносим — пусть висит в одной ячейке.
-      if (raw !== '' && !value) continue;
+      if (touchedPresence) {
+        var raw = String(sh.getRange(r, PRESENCE_COL).getValue() || '').trim();
+        var value = _safePresence(raw);
+        // Опечатку не разносим — пусть висит в одной ячейке и бросается в глаза.
+        if (raw === '' || value) {
+          _setForNick(tabs, nick, PRESENCE_COL, value);
+          _forceConsent(tabs, nick, value);
+        }
+      }
 
-      _setForNick(tabs, nick, PRESENCE_COL, value);
-      _forceConsent(tabs, nick, value);
+      if (touchedWritten) {
+        // «Написали?» — тоже про человека: письмо уходит ему, а не каждому
+        // объявлению. Реестр согласий эта колонка не трогает: она про рассылку.
+        var rawW = String(sh.getRange(r, WRITTEN_COL).getValue() || '').trim();
+        if (rawW === '' || STATUSES.indexOf(rawW) !== -1) {
+          _setForNick(tabs, nick, WRITTEN_COL, rawW);
+        }
+      }
     }
   } catch (err) {
     // Триггер не должен мешать человеку работать с таблицей: молчим.
