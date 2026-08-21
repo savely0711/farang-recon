@@ -489,10 +489,15 @@ function _tabsLight() {
 /**
  * Записать статус в реестр СИЛОЙ, не глядя на «силу» прежнего: так работает
  * только ручная правка. Пустое значение = удалить человека из реестра.
+ *
+ * «Нет ответа» — про рассылку, а не про согласие, поэтому реестр от него не
+ * меняется: человек, который однажды согласился, согласившимся и остаётся.
  */
 function _forceConsent(tabs, nick, status) {
   var sh = tabs.consent;
   if (!sh) return;
+  if (status && CONSENT_STATUSES.indexOf(status) === -1) return;
+
   var map = _readConsents(sh);
   var cur = map[nick];
 

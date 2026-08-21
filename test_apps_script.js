@@ -431,6 +431,15 @@ check('мусорное значение остаётся в одной ячей
   rowsOf('anna').filter((r) => r[7] === 'сагласен').length === 1);
 editPresence('anna', '');
 
+// «Нет ответа» — про рассылку, реестр им не трогаем
+editPresence('anna', 'согласен');
+editPresence('anna', 'нет ответа');
+check('«нет ответа» разошлось по строкам',
+  rowsOf('anna').every((r) => r[7] === 'нет ответа'), JSON.stringify(rowsOf('anna')));
+check('но согласие в реестре осталось',
+  (dumpConsent().find((r) => r[0] === 'anna') || [])[1] === 'согласен', JSON.stringify(dumpConsent()));
+editPresence('anna', '');
+
 // Правка в чужой колонке триггер не будит
 const before = JSON.stringify(dump(CRM));
 const other = crmSheet.getRange(2, 6);
