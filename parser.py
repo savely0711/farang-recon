@@ -11,6 +11,12 @@
   - ПРОПУСКАЕТ повторы одного объявления (тот же автор + тот же текст) — в
     таблицу не пишет копии и даже не тратит на них ИИ (см. dedup.py);
   - объявления пишет в Google-таблицу ПАЧКАМИ;
+  - объявления о ЖИЛЬЕ (категория realty) дополнительно копирует во вторую
+    таблицу «Фаранг — Недвижимость» с полным разбором — чтобы картина рынка
+    была в одном месте (решение Савелия 25.08.2026). Это только копия строки:
+    рассылка и авто-подготовка по-прежнему работают по ЭТОЙ таблице и о второй
+    ничего не знают. Вторая таблица недоступна — прогон идёт как ни в чём не
+    бывало. Включается само, если в .env есть REALTY_SHEET_WEBHOOK_URL;
   - запоминает, докуда дочитал (state.json), чтобы не дублировать.
 
 Мини-CRM «Присутствие» (17.08.2026) — что поменялось:
@@ -88,7 +94,46 @@ async def _author_username(msg) -> str | None:
         return None
 
 
-async def process_channel(client, sheet, ch: dict, joins_left: list, persist: bool):
+def _realty_sink():
+    """Вторая, НЕОБЯЗАТЕЛЬНАЯ точка записи: таблица «Фаранг — Недвижимость».
+
+    Зачем (решение Савелия 25.08.2026): барахолки полны объявлений о жилье, и
+    Савелий хочет видеть их в общей картине рынка вместе с тем, что собирает
+    контур недвижимости. Поэтому каждое объявление с категорией realty уходит
+    ВТОРЫМ экземпляром в ту таблицу — с полным разбором (цена, спальни, район,
+    агентство или частник).
+
+    Важно: это ТОЛЬКО копия строки. Рассылка и авто-подготовка по-прежнему
+    работают по старой таблице и о новой ничего не знают. Если новая таблица
+    недоступна, прогон барахолок не должен пострадать — поэтому все обращения
+    к ней обёрнуты в try и молча пропускаются.
+    """
+    if os.environ.get("DRY_RUN") == "1" or not os.environ.get("REALTY_SHEET_WEBHOOK_URL"):
+        return None
+    try:
+        from realty_sheets import RealtySheet
+        return RealtySheet()
+    except Exception as e:  # noqa: BLE001
+        print(f"  ⚠ таблица недвижимости недоступна ({e}) — пишу только в основную")
+        return None
+
+
+def _realty_row(msg, ch: dict, author, text: str, username: str):
+    """Готовит объявление о жилье для таблицы недвижимости: правила + ИИ."""
+    import realty_ai
+    from realty_extract import extract
+    return {
+        "date": msg.date,
+        "link": f"https://t.me/{username}/{msg.id}",
+        "author": author,
+        "channel": ch["title"],
+        "snippet": text,
+        "fields": realty_ai.merge(extract(text), realty_ai.parse(text)),
+    }
+
+
+async def process_channel(client, sheet, ch: dict, joins_left: list, persist: bool,
+                          realty=None):
     username = ch["username"]
     print(f"\n📂 Канал @{username} ({ch['title']})")
 
@@ -129,6 +174,8 @@ async def process_channel(client, sheet, ch: dict, joins_left: list, persist: bo
     write_failed = False
     buffer = []               # копим объявления: список (msg_id, «сырое» объявление)
     pending = set()           # ключи дублей этого прогона (ещё не записанных на диск)
+    realty_buffer = []        # копии объявлений о жилье для таблицы недвижимости
+    realty_added = 0
 
     def flush() -> bool:
         """Отправляет накопленную пачку. При успехе двигает written_id, помечает
@@ -155,7 +202,22 @@ async def process_channel(client, sheet, ch: dict, joins_left: list, persist: bo
                     outreach_queue.enqueue(
                         item.get("author"), item["link"], item.get("date"))
             buffer.clear()
+            _flush_realty()
         return ok
+
+    def _flush_realty() -> None:
+        """Копия объявлений о жилье во вторую таблицу. Никогда не роняет прогон
+        и не влияет на «докуда дочитали»: не вышло — не беда, эти строки всё
+        равно есть в основной таблице."""
+        nonlocal realty_added
+        if not realty_buffer:
+            return
+        try:
+            if realty is not None and realty.flush(realty_buffer):
+                realty_added += len(realty_buffer)
+        except Exception as e:  # noqa: BLE001
+            print(f"  ⚠ копия в таблицу недвижимости не ушла: {e}")
+        realty_buffer.clear()
 
     try:
         async for msg in client.iter_messages(entity, **kwargs):
@@ -193,6 +255,13 @@ async def process_channel(client, sheet, ch: dict, joins_left: list, persist: bo
                     "snippet": text,
                     "seller_type": result.get("seller_type", ""),
                 }))
+                # Объявление о жилье? Готовим копию для таблицы недвижимости.
+                if realty is not None and result["category"] == "realty":
+                    try:
+                        realty_buffer.append(
+                            _realty_row(msg, ch, author, text, username))
+                    except Exception as e:  # noqa: BLE001
+                        print(f"  ⚠ не разобрал объявление о жилье: {e}")
                 # Дошли до потолка пачки — отправляем сразу.
                 if len(buffer) >= BATCH_SIZE and not flush():
                     write_failed = True
@@ -212,9 +281,12 @@ async def process_channel(client, sheet, ch: dict, joins_left: list, persist: bo
     if final_id > last_id:
         state.set_last_id(username, final_id)
 
+    _flush_realty()   # остаток копий, если основная пачка не отправлялась
+
     tail = " (запись прервалась — докуда успели; остальное в след. раз)" if write_failed else ""
+    realty_tail = f"; копий о жилье во вторую таблицу: {realty_added}" if realty else ""
     print(f"  ✅ объявлений записано: {added}; проверено ИИ: {seen}; "
-          f"копий отсеяно: {duped}; пропущено болтовни: {skipped}; "
+          f"копий отсеяно: {duped}; пропущено болтовни: {skipped}{realty_tail}; "
           f"докуда дочитал: {final_id}{tail}")
 
 
@@ -258,6 +330,7 @@ async def main():
     # Дубли запоминаем на диск только при реальной записи в таблицу
     # (в тестовом прогоне файл dedup.json не трогаем, чтобы не «засорять» память).
     persist = not isinstance(sheet, DryRunSink)
+    realty = _realty_sink()
     dedup.load()
     joins_left = [MAX_NEW_JOINS_PER_RUN]
 
@@ -270,11 +343,18 @@ async def main():
             # Защитная сеть: непредвиденный сбой на одном канале не должен
             # ронять весь прогон — сообщаем и идём к следующему.
             try:
-                await process_channel(client, sheet, ch, joins_left, persist)
+                await process_channel(client, sheet, ch, joins_left, persist, realty)
             except Exception as e:  # noqa: BLE001
                 print(f"  ⚠ канал @{ch['username']} прервался: {e} — иду дальше")
             if i < len(CHANNELS) - 1:
                 await asyncio.sleep(DELAY_BETWEEN_CHANNELS)
+
+    # Счётчик агентств во второй таблице — по свежим копиям.
+    if realty is not None:
+        try:
+            realty.rebuild_counter()
+        except Exception as e:  # noqa: BLE001
+            print(f"  ⚠ счётчик недвижимости не пересчитался: {e}")
 
     print("\n🏁 Прогон завершён.")
 

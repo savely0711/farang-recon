@@ -69,6 +69,9 @@ class FakeSheet {
   constructor(name) { this.name = name; this.data = []; }
   getName() { return this.name; }
   getLastRow() { return this.data.length; }
+  getLastColumn() {
+    return this.data.reduce((m, r) => Math.max(m, r ? r.length : 0), 0);
+  }
   getRange(row, col, rows, cols) {
     return new FakeRange(this, row, col, rows === undefined ? 1 : rows,
                          cols === undefined ? 1 : cols);
@@ -122,12 +125,15 @@ let res = post({
     { author: '@AgencyOne', link: 't.me/g/1', channel: 'Недвижимость Паттайя',
       date: daysAgo(1), kind: 'предложение', deal: 'аренда', prop_type: 'кондо',
       price: 25000, currency: 'THB', period: 'месяц', bedrooms: 1, area: 35,
-      district: 'Джомтьен', snippet: 'Сдам кондо' },
+      district: 'Джомтьен', seller: 'агентство', agency: 'Sunrise Estate',
+      project: 'Riviera Wongamat', parsed_by: 'ИИ', snippet: 'Сдам кондо' },
     { author: 'agencyone', link: 't.me/g/2', channel: 'Недвижимость Паттайя',
       date: daysAgo(10), kind: 'предложение', deal: 'продажа', price: 4500000,
-      currency: 'THB', period: 'всего', district: 'Наклуа', snippet: 'Продам' },
+      currency: 'THB', period: 'всего', district: 'Наклуа', seller: 'агентство',
+      agency: 'Sunrise Estate', parsed_by: 'ИИ+правила', snippet: 'Продам' },
     { author: 'petr', link: 't.me/g/3', channel: 'Недвижимость Паттайя',
-      date: daysAgo(2), kind: 'спрос', deal: 'аренда', snippet: 'Сниму студию' },
+      date: daysAgo(2), kind: 'спрос', deal: 'аренда', seller: 'частник',
+      parsed_by: 'правила', snippet: 'Сниму студию' },
   ],
 });
 eq('записано строк', res.written, 3);
@@ -142,6 +148,13 @@ check('дата стала настоящей датой', sheets['Объявл�
 check('пустая цена осталась пустой, а не нулём',
       sheets['Объявления'].data[3][7] === '',
       JSON.stringify(sheets['Объявления'].data[3][7]));
+check('шапка знает про новые колонки',
+      sheets['Объявления'].data[0].slice(14, 19).join('|') ===
+      'Тип продавца|Агентство|Проект|Разбор|Описание',
+      sheets['Объявления'].data[0].slice(14, 19).join('|'));
+check('колонка «Разбор» заполнена',
+      sheets['Объявления'].data[1][17] === 'ИИ',
+      String(sheets['Объявления'].data[1][17]));
 
 // ─────────── 3. Счётчик ───────────
 console.log('\n3. Счётчик агентств');
@@ -149,11 +162,13 @@ const nicks = post({ token: TOKEN, action: 'counter' }).nicks;
 eq('ников в счётчике (спрос не в счёт)', nicks, 1);
 const row = sheets['Счётчик'].data[1];
 eq('ник', row[0], 'agencyone');
-eq('за 7 дней', row[1], 1);
-eq('за 30 дней', row[2], 2);
-eq('всего', row[3], 2);
-eq('групп', row[6], 1);
-eq('доля, %', row[8], 100);
+eq('тип продавца', row[1], 'агентство');
+eq('название конторы', row[2], 'Sunrise Estate');
+eq('за 7 дней', row[3], 1);
+eq('за 30 дней', row[4], 2);
+eq('всего', row[5], 2);
+eq('групп', row[8], 1);
+eq('доля, %', row[10], 100);
 
 console.log('\n4. Пересчёт не задваивает строки');
 post({ token: TOKEN, action: 'counter' });
@@ -164,12 +179,13 @@ console.log('\n5. Свежие цифры при новых постах');
 post({ token: TOKEN, action: 'append', rows: [
   { author: 'AgencyTwo', link: 't.me/g/4', channel: 'Другая группа',
     date: daysAgo(3), kind: 'предложение', deal: 'аренда', price: 18000,
-    currency: 'THB', period: 'месяц', snippet: 'Сдам студию' }] });
+    currency: 'THB', period: 'месяц', seller: 'частник', snippet: 'Сдам студию' }] });
 post({ token: TOKEN, action: 'counter' });
 const rows = sheets['Счётчик'].data.slice(1).filter(function (r) { return r[0]; });
 eq('ников стало', rows.length, 2);
 eq('первым идёт самый активный', rows[0][0], 'agencyone');
-eq('доля лидера, %', rows[0][8], 66.7);
+eq('доля лидера, %', rows[0][10], 66.7);
+eq('частник остался частником', rows[1][1], 'частник');
 
 console.log('\n' + '='.repeat(60));
 if (failed.length) {

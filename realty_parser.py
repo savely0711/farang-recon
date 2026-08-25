@@ -5,15 +5,20 @@
   - заходит тем же техническим аккаунтом (TG_SESSION из .env);
   - по каждой группе из realty_channels.py читает НОВЫЕ посты
     (первый заход — за последнюю неделю, дальше — только новые);
-  - каждый пост разбирает ПРАВИЛАМИ, без ИИ (realty_extract.py): сделка, тип
-    жилья, цена, период, спальни, площадь, район;
+  - каждый пост разбирает СНАЧАЛА правилами (realty_extract.py), потом ИИ
+    (realty_ai.py): сделка, тип жилья, цена, период, спальни, площадь, район,
+    а от ИИ ещё агентство или частник и название конторы. ИИ не ответил
+    (кончился баланс, сбой) — остаётся разбор правилами, прогон не встаёт;
+    колонка «Разбор» в таблице показывает, кто сработал;
   - пропускает повторы (тот же автор + тот же текст) — realty_dedup.json;
   - пишет пачками в ОТДЕЛЬНУЮ таблицу «Фаранг — Недвижимость».
 
 Чего НЕ делает специально (решение Савелия 25.08.2026):
   - никому не пишет: очередь «первого касания» здесь не подключена вовсе;
-  - ничего не публикует на сайт: авто-подготовка этот контур не видит;
-  - не тратит ИИ.
+  - ничего не публикует на сайт: авто-подготовка этот контур не видит.
+
+Выключатель ИИ на чёрный день: `REALTY_AI=0` в .env — прогон продолжит работать
+на одних правилах (см. realty_ai.py).
 
 Разделение со старой разведкой — на уровне файлов, а не договорённостей:
 свой список групп, своя память прочитанного (realty_state.json), свой список
@@ -36,6 +41,7 @@ from telethon.sessions import StringSession
 from telethon.tl.types import User
 
 import dedup
+import realty_ai
 import state
 from realty_channels import CHANNELS
 from realty_extract import extract, is_realty_candidate
@@ -129,7 +135,10 @@ async def process_channel(client, sheet, ch: dict, persist: bool):
             if MAX_POSTS_PER_CHANNEL and seen > MAX_POSTS_PER_CHANNEL:
                 print(f"  ⏹ достигнут лимит {MAX_POSTS_PER_CHANNEL} постов — стоп")
                 break
-            fields = extract(text)
+            # Сначала правила (бесплатно), потом ИИ — он уточняет разбор и
+            # добавляет то, чего правилами не взять: агентство это или частник
+            # и как контора называется. Не ответил ИИ — остаются правила.
+            fields = realty_ai.merge(extract(text), realty_ai.parse(text))
             if not fields["is_realty"]:
                 not_realty += 1
                 continue
@@ -179,10 +188,13 @@ class DryRunSink:
             per = f"/{f['period']}" if f["period"] else ""
             beds = f"{f['bedrooms']} сп." if f["bedrooms"] is not None else "спальни ?"
             author = f"@{x['author']}" if x.get("author") else "без ника"
+            who = f.get("seller") or "?"
+            agency = f" ({f['agency']})" if f.get("agency") else ""
             snip = (x["snippet"] or "").replace("\n", " ").strip()[:70]
             print(f"    [{x['date']:%Y-%m-%d}] {f['kind']} · {f['deal'] or '?'} · "
                   f"{f['prop_type'] or '?'} · {price}{per} · {beds} · "
-                  f"{f['district'] or 'район ?'} · {author}\n"
+                  f"{f['district'] or 'район ?'} · {who}{agency} · {author} · "
+                  f"разбор: {f.get('parsed_by') or '?'}\n"
                   f"        {x['link']}\n        «{snip}»")
         return True
 

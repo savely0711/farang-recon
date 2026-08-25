@@ -7,14 +7,18 @@
  *
  * Две вкладки:
  *   «Объявления» — строка = пост. Дубли по ссылке отсекаются здесь же.
- *   «Счётчик»    — строка = ник автора: сколько объявлений за 7 дней, за 30
- *                  дней и за всё время, первый и последний пост, в каких
- *                  группах, доля от всех объявлений. Считаются только
- *                  предложения; «спрос» (сниму/ищу) в счётчик не идёт.
+ *   «Счётчик»    — строка = ник автора: тип продавца, название конторы,
+ *                  сколько объявлений за 7 дней, за 30 дней и за всё время,
+ *                  первый и последний пост, в каких группах, доля от всех
+ *                  объявлений. Считаются только предложения; «спрос»
+ *                  (сниму/ищу) в счётчик не идёт. Тип продавца и название
+ *                  конторы берутся у ника по большинству его постов: ИИ
+ *                  решает по каждому посту отдельно и иногда ошибается.
  *
  * Что принимает (POST, JSON):
  *   {token, action:'append',  rows:[{author,link,channel,date,kind,deal,
- *        prop_type,price,currency,period,price_max,bedrooms,area,district,snippet}]}
+ *        prop_type,price,currency,period,price_max,bedrooms,area,district,
+ *        seller,agency,project,parsed_by,snippet}]}
  *   {token, action:'counter'} — пересчитать вкладку «Счётчик»
  *   {token, action:'ping'}    — проверка связи
  *
@@ -38,19 +42,24 @@ var COUNTER_TAB = 'Счётчик';
 
 var HEADER = ['Ник', 'Ссылка', 'Группа', 'Дата', 'Что это', 'Сделка',
               'Тип жилья', 'Цена', 'Валюта', 'Период', 'Цена макс',
-              'Спальни', 'Площадь', 'Район', 'Описание'];
+              'Спальни', 'Площадь', 'Район', 'Тип продавца', 'Агентство',
+              'Проект', 'Разбор', 'Описание'];
 var NICK_COL = 1;     // A
 var LINK_COL = 2;     // B — ключ дубля
 var CHAN_COL = 3;     // C
 var DATE_COL = 4;     // D
 var KIND_COL = 5;     // E — предложение / спрос
+var SELLER_COL = 15;  // O — агентство / частник (ставит ИИ)
+var AGENCY_COL = 16;  // P — название конторы, если ИИ его нашёл
+var LAST_READ_COL = AGENCY_COL;  // докуда читает счётчик
 
-var COUNTER_HEADER = ['Ник', 'За 7 дней', 'За 30 дней', 'Всего',
-                      'Первый пост', 'Последний пост', 'Групп', 'Группы',
-                      'Доля, %'];
+var COUNTER_HEADER = ['Ник', 'Тип продавца', 'Агентство', 'За 7 дней',
+                      'За 30 дней', 'Всего', 'Первый пост', 'Последний пост',
+                      'Групп', 'Группы', 'Доля, %'];
 
 var KIND_OFFER = 'предложение';
 var NO_NICK = '— без ника —';
+var SELLER_AGENCY = 'агентство';
 
 var HEAD_BG = '#d9ead3';   // шапка вкладок
 var TOP_BG = '#fff2cc';    // первая тройка счётчика
@@ -111,7 +120,33 @@ function _ensureTabs() {
     _writeHeader(counter, COUNTER_HEADER);
     counter.setFrozenRows(1);
   }
+  _fixHeader(list, HEADER);
+  _fixHeader(counter, COUNTER_HEADER);
   return { list: list, counter: counter };
+}
+
+/**
+ * Приводит шапку к нынешнему набору колонок. Осторожно: если в листе уже есть
+ * строки, порядок колонок менять НЕЛЬЗЯ — старые данные разъедутся. Поэтому
+ * переписываем шапку только у пустого листа, а у заполненного лишь дописываем
+ * недостающие названия справа.
+ */
+function _fixHeader(sheet, header) {
+  var width = Math.max(sheet.getLastColumn(), header.length);
+  var now = sheet.getRange(1, 1, 1, width).getValues()[0];
+  var same = true;
+  for (var i = 0; i < header.length; i++) {
+    if (String(now[i] || '') !== header[i]) { same = false; break; }
+  }
+  if (same) return;
+  if (sheet.getLastRow() > 1) {
+    // Лист не пустой: дописываем только пустые ячейки шапки справа.
+    for (var j = 0; j < header.length; j++) {
+      if (!String(now[j] || '')) sheet.getRange(1, j + 1, 1, 1).setValue(header[j]);
+    }
+    return;
+  }
+  _writeHeader(sheet, header);
 }
 
 function _writeHeader(sheet, header) {
@@ -157,6 +192,10 @@ function _appendDedup(tabs, rows) {
       _num(it.bedrooms),
       _num(it.area),
       it.district || '',
+      it.seller || '',
+      it.agency || '',
+      it.project || '',
+      it.parsed_by || '',
       it.snippet || ''
     ]);
   }
@@ -203,7 +242,7 @@ function rebuildCounter() {
   }
   if (last < 2) return 0;
 
-  var data = sheet.getRange(2, 1, last - 1, KIND_COL).getValues();
+  var data = sheet.getRange(2, 1, last - 1, LAST_READ_COL).getValues();
   var now = new Date();
   var d7 = new Date(now.getTime() - 7 * 24 * 3600 * 1000);
   var d30 = new Date(now.getTime() - 30 * 24 * 3600 * 1000);
@@ -218,13 +257,22 @@ function rebuildCounter() {
     var when = data[i][DATE_COL - 1];
     if (!(when instanceof Date)) when = _toDate(when);
 
+    var seller = String(data[i][SELLER_COL - 1] || '').trim();
+    var agency = String(data[i][AGENCY_COL - 1] || '').trim();
+
     var rec = map[nick];
     if (!rec) {
-      rec = map[nick] = { all: 0, w: 0, m: 0, first: null, last: null, chans: {} };
+      rec = map[nick] = { all: 0, w: 0, m: 0, first: null, last: null,
+                          chans: {}, agencies: {}, business: 0 };
     }
     rec.all++;
     total++;
     if (chan) rec.chans[chan] = true;
+    // Тип продавца и название конторы ИИ определяет по каждому посту отдельно,
+    // и у одного ника они могут разойтись. Берём то, что встречается чаще:
+    // одна ошибка модели не должна переименовать агентство целиком.
+    if (seller === SELLER_AGENCY) rec.business++;
+    if (agency) rec.agencies[agency] = (rec.agencies[agency] || 0) + 1;
     if (when instanceof Date && !isNaN(when.getTime())) {
       if (when >= d7) rec.w++;
       if (when >= d30) rec.m++;
@@ -238,16 +286,23 @@ function rebuildCounter() {
     var r = map[key];
     var names = [];
     for (var c in r.chans) names.push(c);
-    out.push([key, r.w, r.m, r.all, r.first || '', r.last || '',
+    // Название конторы — самое частое из встреченных у этого ника.
+    var agency = '', best = 0;
+    for (var a in r.agencies) {
+      if (r.agencies[a] > best) { best = r.agencies[a]; agency = a; }
+    }
+    // Тип продавца: агентство, если так решил ИИ хотя бы у половины постов.
+    var seller = r.business * 2 >= r.all ? SELLER_AGENCY : 'частник';
+    out.push([key, seller, agency, r.w, r.m, r.all, r.first || '', r.last || '',
               names.length, names.join(', '),
               total ? Math.round(r.all * 1000 / total) / 10 : 0]);
   }
   // Сортировка: сначала самые активные за всё время, при равенстве — за месяц.
-  out.sort(function (a, b) { return (b[3] - a[3]) || (b[2] - a[2]); });
+  out.sort(function (a, b) { return (b[5] - a[5]) || (b[4] - a[4]); });
 
   if (out.length) {
     counter.getRange(2, 1, out.length, COUNTER_HEADER.length).setValues(out);
-    counter.getRange(2, 5, out.length, 2).setNumberFormat('yyyy-mm-dd');
+    counter.getRange(2, 7, out.length, 2).setNumberFormat('yyyy-mm-dd');
     counter.getRange(2, 1, Math.min(3, out.length), COUNTER_HEADER.length)
         .setBackground(TOP_BG);
   }

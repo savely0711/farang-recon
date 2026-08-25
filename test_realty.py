@@ -161,6 +161,56 @@ check("свой список повторов (realty_dedup.json)",
       realty_parser.dedup.DEDUP_FILE)
 check("рассылка не подключена", not hasattr(realty_parser, "outreach_queue"))
 
+# ─────────────── 13. Слияние разбора ИИ и правил ───────────────
+print("\n13. ИИ поверх правил (realty_ai.merge)")
+import realty_ai  # noqa: E402
+
+realty_ai.AI_ENABLED = False   # никаких обращений к ИИ в тестах
+
+rules = extract("Сдам студию в Джомтьене, 12 000 бат/мес, 30 кв.м")
+only_rules = realty_ai.merge(rules, realty_ai.parse("Сдам студию"))
+eq("ИИ не ответил — работают правила", only_rules["parsed_by"], "правила")
+eq("цена от правил на месте", only_rules["price"], 12000)
+eq("тип продавца пустой (правилами не определить)", only_rules["seller"], "")
+
+ai = {"ok": True, "is_realty": True, "kind": "предложение", "deal": "аренда",
+      "prop_type": "студия", "price": 12500, "price_max": None, "currency": "THB",
+      "period": "месяц", "bedrooms": 0, "area": 30, "district": "Пратамнак",
+      "project": "The Base", "seller": "агентство", "agency": "Sunrise Estate"}
+both = realty_ai.merge(rules, ai)
+eq("цена ИИ перебивает правила", both["price"], 12500)
+eq("район ИИ перебивает правила", both["district"], "Пратамнак")
+eq("тип продавца — только от ИИ", both["seller"], "агентство")
+eq("название конторы", both["agency"], "Sunrise Estate")
+eq("видно, кто разобрал", both["parsed_by"], "ИИ+правила")
+
+sale = realty_ai.merge(extract("Продам кондо 4.5 млн бат"),
+                       dict(ai, deal="продажа", period="месяц", price=4500000))
+eq("у продажи период приводится к «всего»", sale["period"], "всего")
+
+# ─────────────── 14. Копия объявлений о жилье из старых барахолок ───────────────
+print("\n14. Барахолки копируют жильё во вторую таблицу (parser.py)")
+os.environ.pop("REALTY_SHEET_WEBHOOK_URL", None)
+import parser as old_parser  # noqa: E402
+
+check("нет адреса второй таблицы — копия просто не делается",
+      old_parser._realty_sink() is None)
+
+
+class _Msg:
+    id = 777
+    date = datetime(2026, 8, 25, 10, 0, tzinfo=timezone.utc)
+
+
+row = old_parser._realty_row(_Msg(), {"title": "Барахолка Паттайя"}, "petr",
+                             "Сдам кондо на Пратамнаке, 1 спальня, 18000 бат/мес",
+                             "pattaya01")
+eq("ссылка на пост из барахолки", row["link"], "https://t.me/pattaya01/777")
+eq("разобрано как аренда", row["fields"]["deal"], "аренда")
+eq("цена вытащена", row["fields"]["price"], 18000)
+check("копия готова к записи в таблицу недвижимости",
+      "fields" in row and row["fields"]["is_realty"])
+
 # ─────────────── итог ───────────────
 print("\n" + "=" * 60)
 if FAILED:
