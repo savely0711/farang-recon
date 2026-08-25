@@ -3,6 +3,9 @@
 service_account.json
 state.json
 dedup.json
+realty_state.json
+realty_dedup.json
+realty.log
 *.session
 __pycache__/
 *.pyc

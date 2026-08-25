@@ -2,6 +2,8 @@
 скриптом уже есть — не дублирует. Запуск: python3 install_cron.py
 
 Что и когда:
+  08:30  realty_parser.py — обход групп НЕДВИЖИМОСТИ в отдельную таблицу
+                        (без рассылки и без публикации на сайт)
   09:00  parser.py    — ночной обход групп: новые объявления в таблицу
   10:00  prepare.py   — авто-подготовка объявлений «согласных» в очередь модерации
   10:40  fillhash.py  — добор отпечатков картинок для поиска дублей (db/33)
@@ -15,6 +17,7 @@ import subprocess
 
 BASE = "/root/recon"
 NEEDED = [
+    f"30 8 * * * cd {BASE} && /usr/bin/python3 realty_parser.py >> realty.log 2>&1",
     f"0 9 * * * cd {BASE} && /usr/bin/python3 parser.py >> recon.log 2>&1",
     f"0 10 * * * cd {BASE} && /usr/bin/python3 prepare.py >> prepare.log 2>&1",
     f"40 10 * * * cd {BASE} && /usr/bin/python3 fillhash.py >> fillhash.log 2>&1",
@@ -28,12 +31,16 @@ lines = [l for l in existing.splitlines() if l.strip()]
 
 added = 0
 for ln in NEEDED:
+    # ВНИМАНИЕ: «parser.py» — часть строки «realty_parser.py», поэтому имя
+    # недвижимости проверяем ПЕРВЫМ, а совпадение ищем с пробелом впереди.
+    # Иначе строка про недвижимость считалась бы уже существующей и не
+    # добавлялась бы никогда.
     marker = next(
-        name for name in ("parser.py", "prepare.py", "fillhash.py",
-                          "syncsite.py", "outreach.py")
+        name for name in ("realty_parser.py", "parser.py", "prepare.py",
+                          "fillhash.py", "syncsite.py", "outreach.py")
         if name in ln
     )
-    if any(marker in e for e in lines):
+    if any((" " + marker) in e for e in lines):
         continue
     lines.append(ln)
     added += 1
