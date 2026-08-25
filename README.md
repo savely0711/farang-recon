@@ -72,6 +72,10 @@ Google-таблица «Фаранг — Недвижимость»**.
 - `realty_extract.py` — разбор текста правилами;
 - `realty_sheets.py` — запись в таблицу недвижимости;
 - `realty_apps_script.gs` — скрипт-приёмник ТОЙ таблицы (внутри — как ставить);
+- `realtysetup.py` — помощник для `.env` на сервере: принимает одной вставкой
+  «адрес токен», сам пишет заглавные строки (в консоли Aeza их не набрать) и
+  проверяет связь с таблицей (`python3 realtysetup.py`, проверка —
+  `python3 realtysetup.py check`);
 - `realty_check.py` — читаются ли группы;
 - `realty_try.py` — отчёт о качестве разбора (`python3 realty_try.py 200`,
   с примерами непонятого — `python3 realty_try.py 200 bad`);
