@@ -6,12 +6,13 @@
 вставить из буфера обмена.
 
 Запуск (в имени файла нет ни заглавных, ни подчёркиваний — набирается в консоли):
-    python3 realtysetup.py          → попросит вставить строку «адрес токен»
+    python3 realtysetup.py          → спросит адрес, потом токен (по одной вставке)
     python3 realtysetup.py check    → ничего не меняет, только проверяет связь
 
-Вставлять надо ОДНУ строку: сначала адрес скрипта (…/exec), потом пробел, потом
-пароль-токен. Порядок можно и обратный — скрипт разберётся сам: адрес тот, что
-начинается на https.
+Спрашивает по очереди двумя вопросами — так удобнее вставлять из буфера обмена
+кнопкой консоли: скопировал адрес → вставил → Enter → скопировал токен →
+вставил → Enter. Если вставить обе части одной строкой (через пробел), скрипт
+тоже поймёт: адрес тот, что начинается на https.
 
 Что записывает:
     REALTY_SHEET_WEBHOOK_URL=<адрес>
@@ -93,9 +94,16 @@ def main() -> None:
         _ping(url, token)
         return
 
-    raw = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else input(
-        "Вставь строку «адрес токен» и нажми Enter:\n> ")
-    parts = [p.strip() for p in raw.replace("\t", " ").split() if p.strip()]
+    if len(sys.argv) > 1:
+        parts = [p.strip() for p in " ".join(sys.argv[1:]).split() if p.strip()]
+    else:
+        # Два отдельных вопроса: так удобнее вставлять кнопкой буфера обмена.
+        first = input("1) Вставь АДРЕС скрипта таблицы (…/exec) и нажми Enter:\n> ")
+        parts = [p.strip() for p in first.replace("\t", " ").split() if p.strip()]
+        if len(parts) < 2:
+            second = input("2) Вставь ТОКЕН (первая строка кода скрипта) и нажми Enter:\n> ")
+            parts += [p.strip() for p in second.replace("\t", " ").split() if p.strip()]
+
     url = next((p for p in parts if p.startswith("http")), "")
     token = next((p for p in parts if not p.startswith("http")), "")
 
