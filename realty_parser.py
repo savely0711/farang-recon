@@ -56,7 +56,7 @@ dedup.DEDUP_FILE = os.path.join(_HERE, "realty_dedup.json")
 
 # --- настройки аккуратности (те же, что у старой разведки) ---
 FIRST_RUN_DAYS = int(os.environ.get("REALTY_FIRST_RUN_DAYS", "7"))
-DELAY_BETWEEN_POSTS = 1.0
+DELAY_BETWEEN_POSTS = float(os.environ.get("REALTY_DELAY", "1.0"))
 DELAY_BETWEEN_CHANNELS = 8
 BATCH_SIZE = int(os.environ.get("REALTY_BATCH_SIZE", "50"))
 MAX_POSTS_PER_CHANNEL = int(os.environ.get("REALTY_MAX_POSTS", "0"))  # 0 = без лимита
