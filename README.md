@@ -82,8 +82,9 @@ Google-таблица «Фаранг — Недвижимость»**.
   в меню таблицы «Фаранг».
 
 **Файлы контура:**
-- `realty_parser.py` — прогон (`python3 realty_parser.py`, вхолостую —
-  `DRY_RUN=1 python3 realty_parser.py`);
+- `realty_parser.py` — прогон; с сервера запускать через `realtynow.py`
+  (`python3 realtynow.py` — добор нового, `python3 realtynow.py 25` — первый
+  заход за 25 дней; работает в фоне, лог `realty.log`);
 - `realty_channels.py` — список групп (добавлять сюда);
 - `realty_extract.py` — разбор текста правилами;
 - `realty_sheets.py` — запись в таблицу недвижимости;
@@ -92,9 +93,10 @@ Google-таблица «Фаранг — Недвижимость»**.
   «адрес токен», сам пишет заглавные строки (в консоли Aeza их не набрать) и
   проверяет связь с таблицей (`python3 realtysetup.py`, проверка —
   `python3 realtysetup.py check`);
-- `realty_check.py` — читаются ли группы;
-- `realty_try.py` — отчёт о качестве разбора (`python3 realty_try.py 200`,
-  с примерами непонятого — `python3 realty_try.py 200 bad`);
+- `realtycheck.py` — читаются ли группы (в именах помощников нет «_» и
+  заглавных: в консоли Aeza они не набираются);
+- `realtytry.py` — отчёт о качестве разбора (`python3 realtytry.py 200`,
+  с примерами непонятого — `python3 realtytry.py 200 bad`);
 - `test_realty.py` / `test_realty_apps_script.js` — самопроверки, гонять после
   любой правки правил или скрипта таблицы.
 

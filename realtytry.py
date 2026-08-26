@@ -8,9 +8,9 @@
 поправим словари или добавим ИИ точечно на непонятые посты.
 
 Запуск (последнее число — сколько постов смотреть на группу):
-    python3 realty_try.py 200
+    python3 realtytry.py 200
 Показать примеры того, что НЕ разобралось:
-    python3 realty_try.py 200 bad
+    python3 realtytry.py 200 bad
 """
 import asyncio
 import os

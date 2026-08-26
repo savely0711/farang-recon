@@ -4,7 +4,7 @@ realty_channels.py и сколько там постов за последние
 
 Ничего не пишет: ни в таблицу, ни в память прочитанного. Только читает.
 
-Запуск (набирается в консоли Aeza без Shift):  python3 realty_check.py
+Запуск (набирается в консоли Aeza без Shift):  python3 realtycheck.py
 """
 import asyncio
 import os
