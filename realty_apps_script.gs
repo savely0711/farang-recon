@@ -302,6 +302,12 @@ function rebuildCounter() {
 
   if (out.length) {
     counter.getRange(2, 1, out.length, COUNTER_HEADER.length).setValues(out);
+    // Формат задаём ЯВНО каждый раз. Иначе ячейка помнит прежний формат: после
+    // того как в этом столбце когда-то стояла дата, число 52 показывается как
+    // «1900-02-21». Это уже случалось при смене набора колонок.
+    counter.getRange(2, 4, out.length, 3).setNumberFormat('0');       // счётчики
+    counter.getRange(2, 9, out.length, 1).setNumberFormat('0');       // групп
+    counter.getRange(2, 11, out.length, 1).setNumberFormat('0.0');    // доля, %
     counter.getRange(2, 7, out.length, 2).setNumberFormat('yyyy-mm-dd');
     counter.getRange(2, 1, Math.min(3, out.length), COUNTER_HEADER.length)
         .setBackground(TOP_BG);
