@@ -41,7 +41,7 @@ import sys
 import httpx
 from dotenv import load_dotenv
 
-from sheets import (SITE_CATALOG, SITE_GONE, SITE_OFF, SITE_REVIEW, Sheet)
+from sheets import SITE_LIVE, SITE_OFF, SITE_REVIEW, Sheet
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
@@ -50,11 +50,13 @@ CHUNK = 300           # столько ссылок спрашиваем у са
 NICK_CHUNK = 500      # столько ников за один раз
 
 # Ответ сайта → значение колонки «На сайте».
+# С 01.09.2026 «удалено» и «снято» ведут в ОДНУ ячейку «Снято»: человеку важно
+# одно — на сайте объявления нет, а чем именно оно кончилось, видно на сайте.
 STATE_TO_CELL = {
-    "catalog": SITE_CATALOG,
+    "catalog": SITE_LIVE,
     "review": SITE_REVIEW,
     "off": SITE_OFF,
-    "gone": SITE_GONE,
+    "gone": SITE_OFF,
 }
 
 

@@ -154,6 +154,31 @@ row_no_nick = sheets.Sheet._row({
 check("объявление без ника готовится к записи (а не выбрасывается)",
       row_no_nick["author"] == "" and row_no_nick["link"] == "https://t.me/g/2")
 
+# Неудача авто-подготовки: ячейка остаётся ПУСТОЙ, причина уходит в примечание
+# (статус «Не вышло» упразднён 01.09.2026). Проверяем именно то, что улетает
+# в скрипт таблицы, — сам запрос не отправляем.
+sent = {}
+
+
+class _FakeSheet(sheets.Sheet):
+    def __init__(self):  # без сети и без .env
+        self._token = "T"
+
+    def _post_retry(self, payload, note=""):
+        sent.clear()
+        sent.update(payload)
+        return True
+
+
+_FakeSheet().set_site_fail("https://t.me/g/9", "нет фотографий")
+check("неудача пишет ПУСТОЕ значение в «На сайте»", sent.get("value") == "", str(sent))
+check("причина уходит в примечание", sent.get("note") == "нет фотографий", str(sent))
+_FakeSheet().set_site_result("https://t.me/g/9", sheets.SITE_REVIEW)
+check("успех идёт без примечания", sent.get("value") == "Ждёт модератора"
+      and sent.get("note") == "", str(sent))
+check("старые имена статусов ведут на новые",
+      sheets.SITE_CATALOG == "На сайте" and sheets.SITE_GONE == "Снято")
+
 # ─────────────── outreach_queue.py ───────────────
 print("\n4. Очередь первого касания (outreach_queue.py)")
 import outreach_queue  # noqa: E402

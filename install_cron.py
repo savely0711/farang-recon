@@ -9,7 +9,10 @@
   10:40  fillhash.py  — добор отпечатков картинок для поиска дублей (db/33)
   11:20  syncsite.py  — сверка таблицы с сайтом: что стало с объявлениями и
                         кто из авторов зарегистрировался сам
-  каждые 25 мин  outreach.py — рассылка первого касания
+Рассылки «первое касание» здесь БОЛЬШЕ НЕТ: 01.09.2026 Савелий остановил её
+насовсем (неудобно работать с автосообщениями). Строку из расписания убирает
+outreach_off.py, возвращает — outreach_on.py. Сюда её не добавляем, иначе
+любой перезапуск расписания включал бы рассылку обратно.
 
 Порядок важен: prepare.py работает по свежей таблице, fillhash.py — по уже
 загруженным на сайт снимкам, а syncsite.py подводит итог дня."""
@@ -22,7 +25,6 @@ NEEDED = [
     f"0 10 * * * cd {BASE} && /usr/bin/python3 prepare.py >> prepare.log 2>&1",
     f"40 10 * * * cd {BASE} && /usr/bin/python3 fillhash.py >> fillhash.log 2>&1",
     f"20 11 * * * cd {BASE} && /usr/bin/python3 syncsite.py >> syncsite.log 2>&1",
-    f"*/25 * * * * cd {BASE} && /usr/bin/python3 outreach.py >> outreach.log 2>&1",
 ]
 
 cur = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
@@ -37,7 +39,7 @@ for ln in NEEDED:
     # добавлялась бы никогда.
     marker = next(
         name for name in ("realty_parser.py", "parser.py", "prepare.py",
-                          "fillhash.py", "syncsite.py", "outreach.py")
+                          "fillhash.py", "syncsite.py")
         if name in ln
     )
     if any((" " + marker) in e for e in lines):

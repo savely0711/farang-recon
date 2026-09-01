@@ -57,7 +57,7 @@ from telethon.sessions import StringSession
 
 from build import build_listing
 from phash import fingerprint
-from sheets import SITE_FAIL, SITE_REVIEW, Sheet
+from sheets import SITE_REVIEW, Sheet
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
@@ -205,10 +205,14 @@ async def process_row(client, site, sheet, row: dict, stats: dict,
     print(f"\n  📄 @{nick} · {link}")
 
     def fail(reason: str) -> None:
+        """Не получилось. Ячейка «На сайте» остаётся ПУСТОЙ, причина уходит в
+        примечание к ней (статуса «Не вышло» больше нет — решение Савелия
+        01.09.2026). Строка с примечанием в очередь больше не попадает, поэтому
+        мы не тратим деньги ИИ на один и тот же битый пост каждую ночь."""
         stats["fail"] += 1
         print(f"    ⛔ {reason}")
         if not DRY:
-            sheet.set_site_result(link, SITE_FAIL)
+            sheet.set_site_fail(link, reason)
 
     try:
         entity = await client.get_entity(channel)
@@ -270,8 +274,8 @@ async def process_row(client, site, sheet, row: dict, stats: dict,
         return
     if res.get("verdict") == "reject":
         stats["rejected"] += 1
-        print("    🚫 ИИ-модерация сайта отклонила — помечаю «Не вышло»")
-        sheet.set_site_result(link, SITE_FAIL)
+        print("    🚫 ИИ-модерация сайта отклонила — помечаю причину в примечании")
+        sheet.set_site_fail(link, "ИИ-модерация сайта отклонила")
         return
 
     stats["ok"] += 1
