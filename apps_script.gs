@@ -1272,27 +1272,85 @@ function migrateTabs() {
 }
 
 /**
- * Удаляет все вкладки, чьё имя начинается на «архив_» — старые повкладочные
- * архивы по группам и архив старой CRM. Савелий 01.09.2026: они не актуальны.
- * Рабочие вкладки и реестр согласий не трогает никогда.
+ * Удаляет архивные вкладки — но ТОЛЬКО те, которые действительно наши архивы
+ * объявлений. Спрашивает подтверждение и показывает список.
+ *
+ * ПОЧЕМУ НЕ ПРОСТО «ВСЁ, ЧТО НАЧИНАЕТСЯ НА архив_». 01.09.2026 выяснилось, что
+ * под этим именем в таблице живёт ещё и «архив_Untitled» — РУЧНОЙ СПРАВОЧНИК
+ * telegram-групп (№, Название, Ссылка, Юзернейм, Тип, Доступ, Аудитория…).
+ * Его когда-то переименовала старая миграция `migrateBacklog`. Снести такой
+ * лист по имени было бы потерей данных, которые никем больше не хранятся.
+ * Поэтому смотрим на ШАПКУ и трогаем только два знакомых формата:
+ *   - старый повкладочный: A1 = «Дата» и D1 = «Ссылка»;
+ *   - наш нынешний:        A1 = «Ник»  и B1 = «Ссылка».
+ * Всё остальное пропускаем и называем в отчёте.
  */
 function dropArchiveTabs() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheets = ss.getSheets();
-  var killed = [];
+  var toKill = [];
+  var skipped = [];
+
   for (var i = 0; i < sheets.length; i++) {
     var sh = sheets[i];
     var name = sh.getName();
     if (name.indexOf('архив_') !== 0) continue;
     if (DATA_TABS.indexOf(name) !== -1 || name === CONSENT_TAB) continue;
-    ss.deleteSheet(sh);
-    killed.push(name);
+    if (_looksLikeListingArchive(sh)) toKill.push(sh);
+    else skipped.push(name);
   }
+
+  if (!toKill.length) {
+    SpreadsheetApp.getActive().toast(
+      skipped.length
+        ? ('Удалять нечего. Не тронул (не похожи на архив объявлений): ' + skipped.join(', '))
+        : 'Архивных вкладок не нашлось.',
+      'Архивы', 15);
+    return { deleted: 0, names: [], skipped: skipped };
+  }
+
+  var names = [];
+  for (var n = 0; n < toKill.length; n++) names.push(toKill[n].getName());
+
+  // Спрашиваем подтверждение: удаление листа необратимо (только через историю
+  // версий). В тестовой среде и при запуске не из таблицы UI недоступен —
+  // тогда работаем без вопроса.
+  var ok = true;
+  try {
+    var ui = SpreadsheetApp.getUi();
+    var answer = ui.alert(
+      'Удалить архивные вкладки?',
+      'Будут удалены НАСОВСЕМ:\n\n' + names.join('\n') +
+      (skipped.length ? ('\n\nНе тронем (не похожи на архив объявлений):\n' +
+                         skipped.join('\n')) : ''),
+      ui.ButtonSet.YES_NO);
+    ok = (answer === ui.Button.YES);
+  } catch (err) {
+    ok = true;
+  }
+  if (!ok) {
+    SpreadsheetApp.getActive().toast('Отменено, ничего не удалено.', 'Архивы', 10);
+    return { deleted: 0, names: [], skipped: skipped, cancelled: true };
+  }
+
+  for (var k = 0; k < toKill.length; k++) ss.deleteSheet(toKill[k]);
   SpreadsheetApp.getActive().toast(
-    killed.length ? ('Удалено вкладок: ' + killed.length + ' (' + killed.join(', ') + ')')
-                  : 'Архивных вкладок не нашлось.',
+    'Удалено вкладок: ' + names.length + ' (' + names.join(', ') + ')' +
+    (skipped.length ? ('. Не тронул: ' + skipped.join(', ')) : ''),
     'Архивы', 15);
-  return { deleted: killed.length, names: killed };
+  return { deleted: names.length, names: names, skipped: skipped };
+}
+
+/** Похож ли лист на архив объявлений (а не на чей-то справочник)? */
+function _looksLikeListingArchive(sh) {
+  if (sh.getLastRow() < 1) return false;
+  var head = sh.getRange(1, 1, 1, Math.min(6, Math.max(1, sh.getLastColumn()))).getValues()[0];
+  var a = String(head[0] || '').trim().toLowerCase();
+  var b = String(head[1] || '').trim().toLowerCase();
+  var d = String(head[3] || '').trim().toLowerCase();
+  if (a === 'дата' && d === 'ссылка') return true;   // старый повкладочный формат
+  if (a === 'ник' && b === 'ссылка') return true;    // наш нынешний формат
+  return false;
 }
 
 /**

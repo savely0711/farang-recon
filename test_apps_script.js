@@ -501,15 +501,33 @@ check('строк по-прежнему шесть',
   dump(NEW).length + dump(AGREED).length + dump(REFUSED).length +
   dump(REGISTERED).length + dump(NONICK).length === 6);
 
-console.log('\n15. Удаление архивных вкладок');
-SS._sheets.push(makeSheet('архив_Барахолка Паттайя', 100, 6));
-SS._sheets.push(makeSheet('архив_Паттайя объявления', 100, 6));
+console.log('\n15. Удаление архивных вкладок — только настоящих архивов');
+// Два старых повкладочных архива (формат «Дата | Категория | Цена | Ссылка | …»)
+const oldTab1 = makeSheet('архив_Барахолка Паттайя', 100, 6);
+oldTab1.appendRow(['Дата', 'Категория', 'Цена (฿)', 'Ссылка', 'Автор (ник)', 'Краткое описание']);
+oldTab1.appendRow(['2026-07-01', 'Электроника', 100, 'https://t.me/x/1', 'petr', 'Телефон']);
+const oldTab2 = makeSheet('архив_Паттайя объявления', 100, 6);
+oldTab2.appendRow(['Дата', 'Категория', 'Цена (฿)', 'Ссылка', 'Автор (ник)', 'Краткое описание']);
+SS._sheets.push(oldTab1, oldTab2);
+// И РУЧНОЙ СПРАВОЧНИК ГРУПП, который старая миграция тоже назвала «архив_…».
+// Его трогать нельзя — эти данные нигде больше не хранятся (случай 01.09.2026).
+const guide = makeSheet('архив_Untitled', 100, 11);
+guide.appendRow(['№', 'Название', 'Ссылка', 'Юзернейм', 'Тип', 'Доступ',
+                 'Аудитория', 'Тематика', 'Язык', 'Контакт/реклама', 'Заметки']);
+guide.appendRow([1, 'Паттайя Барахолка', 'https://t.me/pattaya01', '@pattaya01',
+                 'Группа', 'Нужен аккаунт', 17609, 'Барахолка', 'RU', '', '']);
+SS._sheets.push(guide);
+
 const drop = vm.runInContext('dropArchiveTabs', ctx)();
-check('удалены все три архива (CRM + две по группам)', drop.deleted === 3, JSON.stringify(drop));
+check('удалены три настоящих архива (CRM + две по группам)', drop.deleted === 3, JSON.stringify(drop));
+check('справочник групп НЕ удалён', !!SS.getSheetByName('архив_Untitled'));
+check('и назван в отчёте как пропущенный',
+  (drop.skipped || []).indexOf('архив_Untitled') !== -1, JSON.stringify(drop));
+check('его строки на месте', guide.getLastRow() === 2);
 check('рабочие вкладки на месте',
   !!SS.getSheetByName(NEW) && !!SS.getSheetByName(AGREED) && !!SS.getSheetByName(NONICK) &&
   !!SS.getSheetByName(CONSENT));
-check('повторный запуск ничего не находит',
+check('повторный запуск ничего не удаляет',
   vm.runInContext('dropArchiveTabs', ctx)().deleted === 0);
 
 console.log('\n16. Пересчёт по реестру + ручная раскладка');
