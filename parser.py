@@ -48,6 +48,7 @@ from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.types import User
 
 import dedup
+from phash import fingerprint
 import outreach_queue
 import state
 from channels import CHANNELS
@@ -82,6 +83,26 @@ async def ensure_member(client, entity) -> bool:
         return True
     except Exception:  # noqa: BLE001
         return False
+
+
+async def _photo_prints(client, msg) -> list:
+    """Отпечатки фотографий поста (обычно один — заглавный снимок).
+
+    Берём уменьшенную копию из Telegram (`thumb=-1` — самая крупная из
+    заготовленных): полноразмерный снимок ради сравнения качать незачем, а
+    отпечаток от пережатия почти не меняется. Не вышло — не беда: тогда
+    объявление сравнится только по тексту.
+    """
+    if not getattr(msg, "photo", None):
+        return []
+    try:
+        raw = await client.download_media(msg, file=bytes, thumb=-1)
+    except Exception:  # noqa: BLE001
+        return []
+    if not raw:
+        return []
+    fp = fingerprint(raw)
+    return [fp] if fp else []
 
 
 async def _author_username(msg) -> str | None:
@@ -193,7 +214,7 @@ async def process_channel(client, sheet, ch: dict, joins_left: list, persist: bo
                 # канал, если ника нет) + текст поста; см. dedup.py.
                 for _, item in buffer:
                     dedup.remember(item.get("author"), item["snippet"],
-                                   item.get("channel"))
+                                   item.get("channel"), item.get("phashes"))
                 dedup.save()
                 # Пункт 14: новые объявления с ником автора — в очередь
                 # «первого касания» (её разбирает outreach.py). Объявления без
@@ -233,10 +254,16 @@ async def process_channel(client, sheet, ch: dict, joins_left: list, persist: bo
             # быть — такие объявления мы теперь ВСЁ РАВНО записываем (рыночные
             # данные), просто в рассылку они не идут.
             author = await _author_username(msg)
+            # Отпечаток фотографии поста (02.09.2026, склейка строк). Нужен,
+            # чтобы поймать «тот же товар, текст переписан»: качаем не сам
+            # снимок, а уменьшенную копию, которую Telegram хранит рядом с
+            # ним, — она приходит мгновенно и для сравнения её хватает.
+            prints = await _photo_prints(client, msg)
             # Повтор ТОГО ЖЕ объявления? Отсеиваем ДО ИИ — не тратим ни ИИ, ни
-            # строку в таблице. Ключ: автор (или канал, если ника нет) + текст.
+            # строку в таблице. Совпасть может текст слово в слово, почти тот
+            # же текст или фотография (см. dedup.py).
             key = dedup.make_key(author, text, ch["title"])
-            if key in pending or dedup.is_dup(author, text, ch["title"]):
+            if key in pending or dedup.is_dup(author, text, ch["title"], prints):
                 duped += 1
                 continue
             seen += 1
@@ -254,6 +281,7 @@ async def process_channel(client, sheet, ch: dict, joins_left: list, persist: bo
                     "channel": ch["title"],
                     "snippet": text,
                     "seller_type": result.get("seller_type", ""),
+                    "phashes": prints,
                 }))
                 # Объявление о жилье? Готовим копию для таблицы недвижимости.
                 if realty is not None and result["category"] == "realty":

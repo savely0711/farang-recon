@@ -270,6 +270,21 @@ res = post({ token: 'T', action: 'append', rows: [
 check('добавилась только новая ссылка', res.written === 1, JSON.stringify(res));
 check('у Ивана стало три строки', dump(NEW).filter((r) => r[0] === 'ivan').length === 3);
 
+console.log('\n2а. Дубль по тексту не проходит даже с новой ссылкой');
+const SAME_TEXT = 'Продаю холодильник Samsung, состояние отличное, самовывоз Джомтьен';
+res = post({ token: 'T', action: 'append', rows: [
+  { author: 'nina', link: 'https://t.me/g/20', channel: 'Барахолка', category: 'Техника', category_slug: 'appliances', date: '2026-08-18 10:00', snippet: SAME_TEXT, seller_type: 'частник' },
+] });
+check('первый раз текст записался', res.written === 1, JSON.stringify(res));
+res = post({ token: 'T', action: 'append', rows: [
+  { author: '@NINA', link: 'https://t.me/g/21', channel: 'Другая группа', category: 'Техника', category_slug: 'appliances', date: '2026-08-18 10:05', snippet: '🔥 ПРОДАЮ  холодильник Samsung!! Состояние отличное — самовывоз Джомтьен 🔥', seller_type: 'частник' },
+] });
+check('тот же текст из другой группы не создал вторую строку', res.written === 0, JSON.stringify(res));
+res = post({ token: 'T', action: 'append', rows: [
+  { author: 'zoya', link: 'https://t.me/g/22', channel: 'Барахолка', category: 'Техника', category_slug: 'appliances', date: '2026-08-18 10:07', snippet: SAME_TEXT, seller_type: 'частник' },
+] });
+check('тот же текст у ДРУГОГО продавца — строка есть', res.written === 1, JSON.stringify(res));
+
 console.log('\n3. «Написали?» ставится ВСЕМ строкам человека и вкладку не меняет');
 res = post({ token: 'T', action: 'mark', author: '@Ivan', value: 'Да' });
 check('поправлено три строки', res.found === 3, JSON.stringify(res));

@@ -102,6 +102,7 @@ var HEADER = ['Ник', 'Ссылка', 'Канал', 'Категория', 'Д�
               'Написали?', 'Присутствие', 'На сайте'];
 var NICK_COL = 1;       // A — ник автора
 var LINK_COL = 2;       // B — ссылка на пост (ключ дубля)
+var TEXT_COL = 6;       // F — «Описание» (второй ключ дубля: тот же текст)
 var WRITTEN_COL = 7;    // G — «Написали?» (рассылка остановлена, колонка-история)
 var PRESENCE_COL = 8;   // H — «Присутствие» (воронка; определяет вкладку)
 var SITE_COL = 9;       // I — «На сайте»
@@ -784,6 +785,27 @@ function _normLink(v) {
   return String(v == null ? '' : v).trim().toLowerCase().replace(/\/+$/, '');
 }
 
+/**
+ * Ключ «тот же автор и тот же текст». Текст приводим к общему виду: нижний
+ * регистр, только буквы и цифры, лишние пробелы схлопнуты — тогда правка
+ * эмодзи или регистра не создаёт новую строку. Цифры оставляем: изменённая
+ * цена — это по сути новое предложение, и увидеть его хочется.
+ *
+ * Возвращаем не сам текст, а короткое число от него: строк в таблице тысячи,
+ * держать в памяти их описания целиком незачем.
+ */
+function _textKey(author, text) {
+  var t = String(text == null ? '' : text).toLowerCase();
+  t = t.replace(/[^\p{L}\p{N}]+/gu, ' ').replace(/\s+/g, ' ').trim();
+  if (t.length < 20) return '';   // слишком коротко, чтобы что-то значить
+  t = t.slice(0, 2000);
+  var h = 5381;                    // короткая свёртка строки (djb2)
+  for (var i = 0; i < t.length; i++) {
+    h = ((h * 33) ^ t.charCodeAt(i)) >>> 0;
+  }
+  return _normNick(author) + '|' + h.toString(36);
+}
+
 function _safeStatus(v) {
   var s = String(v == null ? '' : v).trim();
   return STATUSES.indexOf(s) === -1 ? ST_DONE : s;
@@ -887,13 +909,17 @@ function _setConsent(tabs, nickRaw, statusRaw, reason) {
 }
 
 /** Читает лист один раз и отдаёт: ссылки (для дедупа) и статусы по никам. */
-function _scan(sh, links, byNick) {
+function _scan(sh, links, byNick, texts) {
   var last = sh.getLastRow();
   if (last < 2) return;
   var vals = sh.getRange(2, 1, last - 1, PRESENCE_COL).getValues();
   for (var i = 0; i < vals.length; i++) {
     var link = _normLink(vals[i][LINK_COL - 1]);
     if (link) links[link] = true;
+    if (texts) {
+      var tk = _textKey(vals[i][NICK_COL - 1], vals[i][TEXT_COL - 1]);
+      if (tk) texts[tk] = true;
+    }
     var nick = _normNick(vals[i][NICK_COL - 1]);
     if (!nick) continue;
     var written = String(vals[i][WRITTEN_COL - 1] || '').trim();
@@ -935,7 +961,15 @@ function _tabForPresence(presence) {
 function _appendDedup(tabs, rows) {
   var links = {};
   var byNick = {};
-  for (var t = 0; t < tabs.all.length; t++) _scan(tabs.all[t], links, byNick);
+  // Второй ключ дубля — «тот же автор и тот же текст» (02.09.2026). Раньше
+  // строка отсекалась только по ссылке на пост, поэтому один и тот же товар,
+  // выложенный в пять групп, давал пять строк. Сервер разведки ловит это и
+  // сам (dedup.py, там ещё и фотография), но таблица — последний рубеж: если
+  // на сервере потеряется dedup.json, копии всё равно не пройдут.
+  var texts = {};
+  for (var t = 0; t < tabs.all.length; t++) {
+    _scan(tabs.all[t], links, byNick, texts);
+  }
   // Реестр согласий важнее соседних строк: если человек уже согласился или
   // отказался, его новое объявление сразу получает правильный статус.
   var consents = _readConsents(tabs.consent);
@@ -948,7 +982,10 @@ function _appendDedup(tabs, rows) {
     var r = rows[i];
     var link = _normLink(r.link);
     if (!link || links[link]) continue; // без ссылки или дубль — пропускаем
+    var textKey = _textKey(r.author, r.snippet);
+    if (textKey && texts[textKey]) continue; // тот же текст того же автора
     links[link] = true;
+    if (textKey) texts[textKey] = true;
 
     var nick = _normNick(r.author);
     var st = (nick && byNick[nick]) ? byNick[nick] : { written: ST_TODO, presence: '' };
