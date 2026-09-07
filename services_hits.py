@@ -16,9 +16,16 @@
 
 Стоит денег ИИ: два обращения на пост (модель дешёвая, 60 постов ≈ копейки).
 
+Откуда берутся посты. Сначала — очередь авто-подготовки (то, что реально
+поедет на сайт). Если она пуста (её каждый день в 10:00 разбирает расписание),
+берём свежие посты прямо из групп разведки, отбирая по словам-приметам услуг:
+иначе на девять постов про вещи пришёлся бы один про услугу и замер стоил бы
+вдесятеро дороже. Выборка тогда СМЕЩЁННАЯ — это не «доля услуг на рынке», а
+ответ на вопрос «когда услуга приходит, разбирается ли она правильно».
+
 Запуск (в консоли Aeza, сначала обновить код):
-    cd ~/farang-recon && git pull && python3 services_hits.py
-    python3 services_hits.py 100 0     — до 100 постов, без ограничения по дате
+    cd farang-recon && git pull && python3 zamer.py    — в фоне, лог zamer.log
+    python3 services_hits.py 40                        — прямо в консоли
 
 Полная таблица по каждому посту ложится рядом в services_hits.tsv.
 """
@@ -26,6 +33,7 @@ import asyncio
 import os
 import re
 import sys
+from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 from telethon import TelegramClient
@@ -123,6 +131,74 @@ def report(name: str, was: dict, now: dict) -> None:
             print(f"     {slug:22} {n}")
 
 
+# ─────────────── ОТКУДА БРАТЬ ПОСТЫ ───────────────
+# Слова-приметы услуги. Нужны только запасному источнику: в группах на одну
+# услугу приходится примерно девять постов про вещи, и без отбора замер стоил
+# бы вдесятеро дороже. Отбор грубый и намеренно широкий — решает всё равно ИИ.
+SERVICE_WORDS = re.compile(
+    r"(услуг|мастер|сантехник|электрик|ремонт|уборк|клининг|химчистк|"
+    r"маникюр|педикюр|ресниц|бров|парикмахер|барбер|космет|массаж|спа|"
+    r"трансфер|такси|перевозк|доставк|курьер|грузчик|переезд|"
+    r"репетитор|обучен|уроки|курсы|тренер|инструктор|"
+    r"фотограф|видеограф|съёмк|съемк|монтаж|ведущ|аниматор|"
+    r"визы|виза|продлен|документ|бухгалтер|перевод док|юрист|нотариус|"
+    r"экскурс|тур\b|гид\b|яхт|катер|рыбалк|"
+    r"груминг|стрижка собак|ветеринар|передержк|выгул|"
+    r"настройк|установк|прошивк|разблокир|сайт под ключ|реклам|smm|"
+    r"няня|сиделк|домработниц|прайс|запись на|записыва|выезд на дом)",
+    re.IGNORECASE)
+
+
+async def posts_from_queue(client, rows: list):
+    """Посты из очереди авто-подготовки — по ссылке на конкретный пост."""
+    for row in rows:
+        link = row.get("link") or ""
+        m = LINK_RE.match(link)
+        if not m:
+            continue
+        try:
+            entity = await client.get_entity(m.group(1))
+            msg = await client.get_messages(entity, ids=int(m.group(2)))
+        except Exception as e:  # noqa: BLE001
+            print(f"     пост не открылся: {e}")
+            continue
+        text = (msg.message if msg else "") or ""
+        if text.strip():
+            yield link, text
+
+
+async def posts_from_groups(client, limit: int, days: int):
+    """Запасной источник: свежие посты групп, похожие на услуги."""
+    from channels import CHANNELS
+    since = None
+    if days > 0:
+        since = datetime.now(timezone.utc) - timedelta(days=days)
+    taken = 0
+    for ch in CHANNELS:
+        if taken >= limit:
+            return
+        username = ch["username"]
+        try:
+            entity = await client.get_entity(username)
+        except Exception as e:  # noqa: BLE001
+            print(f"  ⚠ группа @{username} не открылась: {e}")
+            continue
+        try:
+            async for msg in client.iter_messages(entity, limit=300):
+                if since and msg.date and msg.date < since:
+                    break
+                text = (msg.message or "").strip()
+                if len(text) < 40 or not SERVICE_WORDS.search(text):
+                    continue
+                yield f"https://t.me/{username}/{msg.id}", text
+                taken += 1
+                if taken >= limit:
+                    return
+        except Exception as e:  # noqa: BLE001
+            print(f"  ⚠ чтение @{username} прервалось: {e}")
+        await asyncio.sleep(2)
+
+
 async def main() -> int:
     site = Site()
     if not site.ready:
@@ -138,10 +214,13 @@ async def main() -> int:
         return 1
 
     rows = Sheet().read_todo(limit=LIMIT, days=DAYS)
+    source = "очередь авто-подготовки"
     if not rows:
-        print("⛔ очередь пуста или не прочиталась — замерять нечего.")
-        return 1
-    print(f"📋 беру {len(rows)} постов из очереди авто-подготовки\n")
+        print("ℹ очередь авто-подготовки пуста — беру свежие посты из групп.")
+        rows = None
+        source = "свежие посты групп (отбор по словам-приметам услуг)"
+    else:
+        print(f"📋 беру {len(rows)} постов из очереди авто-подготовки\n")
 
     was_s, now_s = blank(), blank()   # услуги
     was_a, now_a = blank(), blank()   # всё остальное
@@ -151,24 +230,14 @@ async def main() -> int:
     session = StringSession(os.environ["TG_SESSION"])
 
     out = open(OUT_TSV, "w", encoding="utf-8")
-    out.write("ссылка\tраздел\tбыло_итог\tбыло_подкат\tстало_итог\tстало_подкат\tзаголовок\n")
+    out.write("ссылка\tраздел\tбыло итог\tбыло подкат\tстало итог\tстало подкат\tзаголовок\n")
 
     async with TelegramClient(session, api_id, api_hash) as client:
-        for i, row in enumerate(rows, 1):
-            link = row.get("link") or ""
-            m = LINK_RE.match(link)
-            if not m:
-                continue
-            try:
-                entity = await client.get_entity(m.group(1))
-                msg = await client.get_messages(entity, ids=int(m.group(2)))
-            except Exception as e:  # noqa: BLE001
-                print(f"  {i:>3}. пост не открылся: {e}")
-                continue
-            text = (msg.message if msg else "") or ""
-            if not text.strip():
-                continue
-
+        posts = (posts_from_queue(client, rows) if rows
+                 else posts_from_groups(client, LIMIT, DAYS or 30))
+        i = 0
+        async for link, text in posts:
+            i += 1
             new = build.build_listing(text, schema)
             old = build_old(text, schema)
 
@@ -192,6 +261,7 @@ async def main() -> int:
                   f"стало: {brief(new)[:34]:34} | {new.get('subcategory') or '—'}")
 
     out.close()
+    print(f"\nисточник постов: {source}")
     report("УСЛУГИ", was_s, now_s)
     report("ВСЁ ОСТАЛЬНОЕ (не должно измениться)", was_a, now_a)
     print(f"\nподробности по каждому посту: {OUT_TSV}")
