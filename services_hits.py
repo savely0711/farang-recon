@@ -46,6 +46,9 @@ OUT_TSV = os.path.join(HERE, "services_hits.tsv")
 
 LIMIT = int(sys.argv[1]) if len(sys.argv) > 1 else 60
 DAYS = int(sys.argv[2]) if len(sys.argv) > 2 else 0
+# Третьим словом можно попросить брать посты прямо из групп, не из очереди:
+# в очереди услуг единицы, а мерить надо на них.
+FORCE_GROUPS = len(sys.argv) > 3 and sys.argv[3].strip().lower() == "groups"
 
 LINK_RE = re.compile(r"^https://t\.me/([A-Za-z0-9_]+)/(\d+)/?$")
 
@@ -74,10 +77,14 @@ def _old_system() -> str:
     return s[:start] + OLD_SUB_RULE + s[end:]
 
 
-def _strip_hints(schema: dict) -> dict:
-    """Справочник без примеров — таким его видел ИИ до правок."""
+def _old_schema(schema: dict) -> dict:
+    """Справочник, каким ИИ видел его ДО правок: без примеров и БЕЗ подкатегорий
+    услуг — их до миграции db/43 не существовало вовсе. Если оставить их здесь,
+    колонка «было» покажет то, чего никогда не было, и замер соврёт в нашу
+    пользу."""
     subs = [{k: v for k, v in sub.items() if k != "hint"}
-            for sub in (schema.get("subcategories") or [])]
+            for sub in (schema.get("subcategories") or [])
+            if sub.get("section") != "services"]
     return {**schema, "subcategories": subs}
 
 
@@ -85,7 +92,7 @@ def build_old(text: str, schema: dict) -> dict:
     saved_system, saved_flag = build._SYSTEM, build.SERVICES_NO_PRICE
     build._SYSTEM, build.SERVICES_NO_PRICE = _old_system(), False
     try:
-        return build.build_listing(text, _strip_hints(schema))
+        return build.build_listing(text, _old_schema(schema))
     finally:
         build._SYSTEM, build.SERVICES_NO_PRICE = saved_system, saved_flag
 
@@ -213,10 +220,10 @@ async def main() -> int:
               "или сайт не переразвёрнут. Замер бессмыслен, останавливаюсь.")
         return 1
 
-    rows = Sheet().read_todo(limit=LIMIT, days=DAYS)
+    rows = None if FORCE_GROUPS else Sheet().read_todo(limit=LIMIT, days=DAYS)
     source = "очередь авто-подготовки"
     if not rows:
-        print("ℹ очередь авто-подготовки пуста — беру свежие посты из групп.")
+        print("ℹ беру свежие посты из групп (отбор по словам-приметам услуг).")
         rows = None
         source = "свежие посты групп (отбор по словам-приметам услуг)"
     else:
@@ -224,6 +231,7 @@ async def main() -> int:
 
     was_s, now_s = blank(), blank()   # услуги
     was_a, now_a = blank(), blank()   # всё остальное
+    diffs = []                        # где старый и новый разбор разошлись
 
     api_id = int(os.environ["TG_API_ID"])
     api_hash = os.environ["TG_API_HASH"]
@@ -256,11 +264,20 @@ async def main() -> int:
                 (new.get("title") or old.get("title") or "").replace("\t", " "),
             ]) + "\n")
 
+            if brief(old) != brief(new):
+                diffs.append((link, brief(old), brief(new), is_serv))
+
             mark = "🛠" if is_serv else "  "
             print(f"  {i:>3}.{mark} было: {brief(old)[:34]:34} | "
                   f"стало: {brief(new)[:34]:34} | {new.get('subcategory') or '—'}")
 
     out.close()
+    if diffs:
+        print(f"\nГДЕ РАЗОШЛИСЬ ({len(diffs)}):")
+        for link, o, n, is_serv in diffs[:15]:
+            tag = "услуга" if is_serv else "прочее"
+            print(f"  {tag} {link}\n     было: {o}\n     стало: {n}")
+
     print(f"\nисточник постов: {source}")
     report("УСЛУГИ", was_s, now_s)
     report("ВСЁ ОСТАЛЬНОЕ (не должно измениться)", was_a, now_a)
