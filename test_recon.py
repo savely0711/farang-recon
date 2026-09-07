@@ -313,6 +313,36 @@ fake_ai('{"ok": true, "title": "Что-то", "description": "", "price_thb": 10
         ' "is_free": false, "is_negotiable": false, "category": "other"}')
 check("категория other на сайт не идёт", not build.build_listing("Всякое")["ok"])
 
+# --- Услуги (сессия 4, 07.09.2026) -----------------------------------------
+# У мастеров цены в посте часто нет вовсе. Раньше такое объявление отбивалось
+# ещё до сайта («цена не разобрана») — теперь считается «договорным».
+fake_ai('{"ok": true, "title": "Уборка квартир", "description": "Выезд по Паттайе.",'
+        ' "price_thb": null, "is_free": false, "is_negotiable": false,'
+        ' "category": "services", "subcategory": "services-home"}')
+serv = build.build_listing("Уборка квартир, цена по запросу")
+check("услуга без цены = «договорная», а не отказ",
+      serv["ok"] and serv["is_negotiable"] and serv["price_thb"] is None,
+      json.dumps(serv, ensure_ascii=False))
+check("подкатегория услуги дошла", serv["subcategory"] == "services-home")
+
+fake_ai('{"ok": true, "title": "Стул", "description": "", "price_thb": null,'
+        ' "is_free": false, "is_negotiable": false, "category": "furniture"}')
+check("послабление по цене НЕ распространилось на вещи",
+      not build.build_listing("Продам стул")["ok"])
+
+# Примеры к подкатегориям приходят с сайта (поле hint) и попадают в подсказку.
+SCHEMA_SERV = {"subcategories": [
+    {"slug": "services-home", "name": "Уборка и помощь по дому",
+     "section": "services", "hint": "уборка квартир, мойка окон, няня"},
+    {"slug": "transport-moto", "name": "Мотоциклы и скутеры",
+     "section": "transport"},
+]}
+hs = build._schema_hint(SCHEMA_SERV)
+check("примеры подкатегории попали в подсказку",
+      "например: уборка квартир, мойка окон, няня" in hs, hs)
+check("подкатегория без примеров не ломает строку",
+      "transport-moto: Мотоциклы и скутеры (раздел transport)" in hs, hs)
+
 
 def boom(**kw):
     raise RuntimeError("ИИ недоступен")

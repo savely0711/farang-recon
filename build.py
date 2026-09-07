@@ -55,8 +55,12 @@ _SYSTEM = (
     "- is_free: true, если отдают даром/бесплатно.\n"
     "- is_negotiable: true, если цена «договорная» и числа нет.\n"
     "- category: slug по сути предмета.\n"
-    "- subcategory: точная подкатегория сайта из списка ниже (slug). Если "
-    "подходящей нет — null.\n"
+    "- subcategory: точная подкатегория сайта из списка ниже (slug). "
+    "ВЫБРАТЬ ОБЯЗАТЕЛЬНО. У части подкатегорий в скобках даны примеры — "
+    "ориентируйся на них, а не только на название. Идеально подходящей нет — "
+    "бери ближайшую по смыслу; в услугах последнее средство — «Другие "
+    "услуги» (services-other), в вещах — «Разное» (misc). null оставляй "
+    "только если в списке нет НИ ОДНОЙ подкатегории нужного раздела.\n"
     "- district: район Паттайи из списка ниже (slug), если он назван или "
     "однозначно понятен из поста. Не уверен — null. НЕ УГАДЫВАЙ.\n"
     "- attrs: объект с признаками из списка ниже — только те, что явно "
@@ -89,7 +93,11 @@ def _schema_hint(schema: dict) -> str:
         lines.append("\nПОДКАТЕГОРИИ САЙТА (поле subcategory, выбери одну):")
         for s in subs:
             sec = s.get("section") or "—"
-            lines.append(f"- {s['slug']}: {s['name']} (раздел {sec})")
+            # Примеры приходят с сайта (lib/cat-hints.ts) — второго списка
+            # здесь нет намеренно: правится в одном месте.
+            hint = s.get("hint")
+            tail = f" — например: {hint}" if hint else ""
+            lines.append(f"- {s['slug']}: {s['name']} (раздел {sec}){tail}")
 
     dists = schema.get("districts") or []
     if dists:
@@ -183,7 +191,14 @@ def build_listing(text: str, schema: dict | None = None) -> dict:
     is_free = bool(data.get("is_free"))
     is_negotiable = bool(data.get("is_negotiable")) and not is_free
     if price is None and not is_free and not is_negotiable:
-        return {**fail, "reason": "цена не разобрана"}
+        # Услуги — исключение (решение Савелия 07.09.2026). У мастеров цены в
+        # посте часто нет вовсе («от 500 бат», «по запросу», «зависит от
+        # объёма»), и прежнее правило резало такие объявления ещё до сайта.
+        # Считаем это «цена договорная»: сайт с 07.09 принимает такие услуги.
+        if category == "services":
+            is_negotiable = True
+        else:
+            return {**fail, "reason": "цена не разобрана"}
     if price is not None:
         is_negotiable = False
 
