@@ -29,7 +29,7 @@ NEEDED = [
     f"0 10 * * * cd {BASE} && /usr/bin/python3 prepare.py >> prepare.log 2>&1",
     f"40 10 * * * cd {BASE} && /usr/bin/python3 fillhash.py >> fillhash.log 2>&1",
     f"20 11 * * * cd {BASE} && /usr/bin/python3 syncsite.py >> syncsite.log 2>&1",
-    f"30 3 * * * cd {BASE} && /usr/bin/python3 backup_photos.py >> backup.log 2>&1",
+    f"30 3 * * * cd {BASE} && /usr/bin/python3 -u backup_photos.py >> backup.log 2>&1",
 ]
 
 cur = subprocess.run(["crontab", "-l"], capture_output=True, text=True)

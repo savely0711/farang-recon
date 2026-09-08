@@ -15,7 +15,10 @@ import sys
 BASE = os.path.dirname(os.path.abspath(__file__))
 LOG = os.path.join(BASE, "backup.log")
 
-args = ["/usr/bin/python3", os.path.join(BASE, "backup_photos.py")]
+# -u обязателен: без него Python копит вывод в буфере, и `tail backup.log`
+# показывает пустоту, пока скрипт не закончит. Проверено 08.09.2026 —
+# зеркало исправно качало, а лог был пустой, и выглядело как поломка.
+args = ["/usr/bin/python3", "-u", os.path.join(BASE, "backup_photos.py")]
 if len(sys.argv) > 1 and sys.argv[1] == "check":
     args.append("check")
 
