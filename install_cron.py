@@ -9,6 +9,10 @@
   10:40  fillhash.py  — добор отпечатков картинок для поиска дублей (db/33)
   11:20  syncsite.py  — сверка таблицы с сайтом: что стало с объявлениями и
                         кто из авторов зарегистрировался сам
+  03:30  backup_photos.py — резервное зеркало фотографий сайта: докачивает
+                        только новые снимки в ~/backup/photos (08.09.2026;
+                        раньше это делал робот GitHub и качал ВСЮ библиотеку
+                        каждую ночь, съедая бесплатный трафик Supabase)
 Рассылки «первое касание» здесь БОЛЬШЕ НЕТ: 01.09.2026 Савелий остановил её
 насовсем (неудобно работать с автосообщениями). Строку из расписания убирает
 outreach_off.py, возвращает — outreach_on.py. Сюда её не добавляем, иначе
@@ -25,6 +29,7 @@ NEEDED = [
     f"0 10 * * * cd {BASE} && /usr/bin/python3 prepare.py >> prepare.log 2>&1",
     f"40 10 * * * cd {BASE} && /usr/bin/python3 fillhash.py >> fillhash.log 2>&1",
     f"20 11 * * * cd {BASE} && /usr/bin/python3 syncsite.py >> syncsite.log 2>&1",
+    f"30 3 * * * cd {BASE} && /usr/bin/python3 backup_photos.py >> backup.log 2>&1",
 ]
 
 cur = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
