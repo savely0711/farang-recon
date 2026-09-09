@@ -23,6 +23,7 @@ outreach_off.py, возвращает — outreach_on.py. Сюда её не д�
 
 Порядок важен: prepare.py работает по свежей таблице, fillhash.py — по уже
 загруженным на сайт снимкам, а syncsite.py подводит итог дня."""
+import re
 import subprocess
 
 BASE = "/root/recon"
@@ -42,15 +43,17 @@ lines = [l for l in existing.splitlines() if l.strip()]
 
 added = 0
 for ln in NEEDED:
+    # Имя скрипта берём прямо из строки — раньше здесь был список имён, и
+    # каждый новый скрипт приходилось в него дописывать. 09.09.2026 про это
+    # забыли, и setcron.py упал с StopIteration.
+    #
     # ВНИМАНИЕ: «parser.py» — часть строки «realty_parser.py», поэтому имя
-    # недвижимости проверяем ПЕРВЫМ, а совпадение ищем с пробелом впереди.
-    # Иначе строка про недвижимость считалась бы уже существующей и не
-    # добавлялась бы никогда.
-    marker = next(
-        name for name in ("realty_parser.py", "parser.py", "prepare.py",
-                          "fillhash.py", "syncsite.py")
-        if name in ln
-    )
+    # ищем целиком и сравниваем с пробелом впереди. Иначе строка про
+    # недвижимость считалась бы уже существующей и не добавлялась бы никогда.
+    found = re.search(r"(\S+\.py)", ln)
+    if not found:
+        continue
+    marker = found.group(1)
     if any((" " + marker) in e for e in lines):
         continue
     lines.append(ln)
