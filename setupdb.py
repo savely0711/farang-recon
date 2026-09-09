@@ -10,10 +10,16 @@
     python3 setupdb.py            → поставит pg_dump, спросит строку, проверит
     python3 setupdb.py check      → ничего не меняет, только проверяет
 
-Где взять строку подключения: Supabase → проект → Settings → Database →
-Connection string → вкладка «Session pooler» → кнопка копирования. В строке
-вместо [YOUR-PASSWORD] надо подставить пароль базы. Пароль я не вижу и никуда
-не записываю, кроме .env на этом сервере.
+Где взять строку подключения: Supabase → проект → кнопка «Connect» вверху →
+вкладка «Direct connection string» → пункт «Session pooler» → кнопка
+копирования у строки. Вставляется она ЦЕЛИКОМ, одним куском - логин и пароль
+внутри неё, отдельно ничего вводить не надо.
+
+Supabase отдаёт строку с заглушкой [YOUR-PASSWORD] вместо пароля. Вписывать
+его руками в консоли Aeza невозможно (там нет заглавных букв), поэтому скрипт
+увидит заглушку и попросит вставить пароль ВТОРЫМ куском - тоже из буфера.
+Подставит сам. Пароль нигде не показывается и не пишется, кроме .env на этом
+сервере (файл закрыт от чужих глаз, права 600).
 """
 import os
 import re
@@ -133,6 +139,28 @@ def main() -> int:
         print("Это не похоже на строку подключения (должна начинаться с "
               "postgresql://). Ничего не меняю.")
         return 1
+
+    # Supabase отдаёт строку с заглушкой вместо пароля. Просим пароль вторым
+    # куском и подставляем сами: в консоли Aeza его не напечатать - там нет
+    # заглавных букв, а пароли почти всегда с ними.
+    placeholders = ("[YOUR-PASSWORD]", "%5BYOUR-PASSWORD%5D", "[your-password]")
+    hit = next((ph for ph in placeholders if ph in db_url), "")
+    if hit:
+        print()
+        print(f"В строке стоит заглушка {hit} вместо настоящего пароля.")
+        print("Вставьте пароль базы и нажмите Enter.")
+        print("(Если пароля нет под рукой: Supabase → Settings → Database →")
+        print(" Reset database password. Сбросить безопасно - этот пароль")
+        print(" больше нигде не используется.)")
+        try:
+            password = input("> ").strip()
+        except EOFError:
+            password = ""
+        if not password:
+            print("Пусто - ничего не меняю.")
+            return 1
+        db_url = db_url.replace(hit, password)
+        print("Пароль подставил.")
 
     lines = set_key(_read_lines(), "DB_URL", db_url)
     with open(ENV, "w", encoding="utf-8") as f:
