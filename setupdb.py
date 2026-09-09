@@ -16,16 +16,15 @@
 файле ~/.bash_history. Имя этого файла с подчёркиванием, в консоли Aeza его
 не набрать, поэтому чистку делает скрипт.
 
-Где взять строку подключения: Supabase → проект → кнопка «Connect» вверху →
-вкладка «Direct connection string» → пункт «Session pooler» → кнопка
-копирования у строки. Вставляется она ЦЕЛИКОМ, одним куском - логин и пароль
-внутри неё, отдельно ничего вводить не надо.
+От человека нужен ТОЛЬКО ПАРОЛЬ базы. Адрес, пользователя, порт и имя базы
+скрипт знает сам (они постоянны и не секретны) и соберёт строку подключения
+за вас. Пароль экранируется, так что спецсимволы в нём не помеха.
 
-Supabase отдаёт строку с заглушкой [YOUR-PASSWORD] вместо пароля. Вписывать
-его руками в консоли Aeza невозможно (там нет заглавных букв), поэтому скрипт
-увидит заглушку и попросит вставить пароль ВТОРЫМ куском - тоже из буфера.
-Подставит сам. Пароль нигде не показывается и не пишется, кроме .env на этом
-сервере (файл закрыт от чужих глаз, права 600).
+Если всё же удобнее вставить строку подключения целиком - скрипт поймёт и её,
+а если в ней осталась заглушка [YOUR-PASSWORD], спросит пароль отдельно.
+
+Пароль нигде не показывается и не пишется, кроме .env на этом сервере
+(файл закрыт от чужих глаз, права 600).
 """
 import os
 import re
@@ -34,6 +33,25 @@ import sys
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 ENV = os.path.join(BASE, ".env")
+
+# Всё, кроме пароля, у строки подключения постоянно и не секретно — это видно
+# в дашборде Supabase любому, у кого есть доступ к проекту. Держим здесь,
+# чтобы от человека требовалось ровно одно действие: вставить пароль.
+# Если проект когда-нибудь переедет, просто вставьте в скрипт полную строку
+# подключения целиком — он поймёт и её.
+DEFAULT_USER = "postgres.ccxbqeuowmrfkijhmiez"
+DEFAULT_HOST = "aws-1-ap-northeast-1.pooler.supabase.com"
+DEFAULT_PORT = "5432"
+DEFAULT_DB = "postgres"
+
+
+def build_url(password: str) -> str:
+    """Собрать строку подключения из постоянных частей и пароля."""
+    from urllib.parse import quote
+    # Пароль может содержать @ ? # и прочее — экранируем, иначе строка
+    # развалится на части в самом неожиданном месте.
+    return (f"postgresql://{DEFAULT_USER}:{quote(password, safe='')}"
+            f"@{DEFAULT_HOST}:{DEFAULT_PORT}/{DEFAULT_DB}")
 
 
 def _read_lines() -> list:
@@ -146,46 +164,46 @@ def main() -> int:
             return 1
     print(f"pg_dump на месте: {have_pgdump()}")
 
-    db_url = arg
-    if not db_url:
+    entered = arg
+    if not entered:
         print()
-        print("Вставьте строку подключения к базе и нажмите Enter.")
-        print("Взять её: Supabase → Settings → Database → Connection string →")
-        print("вкладка Session pooler. Вместо [YOUR-PASSWORD] должен стоять")
-        print("настоящий пароль базы.")
+        print("Вставьте ПАРОЛЬ базы и нажмите Enter.")
+        print("Всё остальное в строке подключения я знаю и подставлю сам:")
+        print(f"   {DEFAULT_USER} @ {DEFAULT_HOST}")
+        print()
+        print("Где взять пароль: Supabase → Settings → Database. Если его нет")
+        print("под рукой — там же «Reset database password», сбросить")
+        print("безопасно: этот пароль больше нигде не используется.")
         try:
-            db_url = input("> ").strip()
+            entered = input("> ").strip()
         except EOFError:
-            db_url = ""
-    if not db_url:
+            entered = ""
+    if not entered:
         print("Пусто - ничего не меняю.")
         return 1
-    if not db_url.startswith("postgres"):
-        print("Это не похоже на строку подключения (должна начинаться с "
-              "postgresql://). Ничего не меняю.")
-        return 1
 
-    # Supabase отдаёт строку с заглушкой вместо пароля. Просим пароль вторым
-    # куском и подставляем сами: в консоли Aeza его не напечатать - там нет
-    # заглавных букв, а пароли почти всегда с ними.
-    placeholders = ("[YOUR-PASSWORD]", "%5BYOUR-PASSWORD%5D", "[your-password]")
-    hit = next((ph for ph in placeholders if ph in db_url), "")
-    if hit:
-        print()
-        print(f"В строке стоит заглушка {hit} вместо настоящего пароля.")
-        print("Вставьте пароль базы и нажмите Enter.")
-        print("(Если пароля нет под рукой: Supabase → Settings → Database →")
-        print(" Reset database password. Сбросить безопасно - этот пароль")
-        print(" больше нигде не используется.)")
-        try:
-            password = input("> ").strip()
-        except EOFError:
-            password = ""
-        if not password:
-            print("Пусто - ничего не меняю.")
-            return 1
-        db_url = db_url.replace(hit, password)
-        print("Пароль подставил.")
+    # Вставили целую строку подключения вместо пароля — тоже принимаем.
+    if entered.startswith("postgres"):
+        db_url = entered
+        placeholders = ("[YOUR-PASSWORD]", "%5BYOUR-PASSWORD%5D", "[your-password]")
+        hit = next((ph for ph in placeholders if ph in db_url), "")
+        if hit:
+            print()
+            print(f"В строке стоит заглушка {hit} вместо настоящего пароля.")
+            print("Вставьте пароль базы и нажмите Enter.")
+            try:
+                password = input("> ").strip()
+            except EOFError:
+                password = ""
+            if not password:
+                print("Пусто - ничего не меняю.")
+                return 1
+            from urllib.parse import quote
+            db_url = db_url.replace(hit, quote(password, safe=""))
+            print("Пароль подставил.")
+    else:
+        db_url = build_url(entered)
+        print("Строку подключения собрал сам, подставив ваш пароль.")
 
     lines = set_key(_read_lines(), "DB_URL", db_url)
     with open(ENV, "w", encoding="utf-8") as f:
