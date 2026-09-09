@@ -9,6 +9,12 @@
 Запуск (имя файла без подчёркиваний - его можно напечатать в консоли Aeza):
     python3 setupdb.py            → поставит pg_dump, спросит строку, проверит
     python3 setupdb.py check      → ничего не меняет, только проверяет
+    python3 setupdb.py clean      → стереть историю команд консоли
+
+Про «clean». Если строку подключения или пароль случайно напечатали прямо в
+консоли (а не в ответ на вопрос скрипта), они остаются в истории команд -
+файле ~/.bash_history. Имя этого файла с подчёркиванием, в консоли Aeza его
+не набрать, поэтому чистку делает скрипт.
 
 Где взять строку подключения: Supabase → проект → кнопка «Connect» вверху →
 вкладка «Direct connection string» → пункт «Session pooler» → кнопка
@@ -76,6 +82,23 @@ def install_pgdump() -> str:
     return have_pgdump()
 
 
+def clean_history() -> int:
+    """Стереть историю команд: там мог осесть пароль, напечатанный вручную."""
+    path = os.path.expanduser("~/.bash_history")
+    if not os.path.exists(path):
+        print("Файла истории нет - чистить нечего.")
+    else:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("")
+        print(f"Историю команд стёр: {path}")
+    print()
+    print("Осталось стереть то, что видно на экране консоли: нажмите")
+    print("Ctrl+L или наберите  clear  и нажмите Enter.")
+    print("В самой оболочке история этого сеанса живёт до выхода -")
+    print("надёжнее закрыть вкладку консоли и открыть заново.")
+    return 0
+
+
 def check() -> int:
     from dotenv import load_dotenv
     load_dotenv(ENV, override=True)
@@ -114,6 +137,8 @@ def main() -> int:
     arg = sys.argv[1].strip() if len(sys.argv) > 1 else ""
     if arg.lower() == "check":
         return check()
+    if arg.lower() == "clean":
+        return clean_history()
 
     if not have_pgdump():
         if not install_pgdump():
