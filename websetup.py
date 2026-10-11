@@ -48,7 +48,7 @@ FIELDS = [
 
 LOOP = asyncio.new_event_loop()
 threading.Thread(target=LOOP.run_forever, daemon=True).start()
-TG = {"client": None, "phone": "", "hash": ""}
+TG = {"client": None, "phone": "", "hash": "", "qr": None}
 DONE = threading.Event()
 
 
@@ -187,6 +187,38 @@ async def _tg_pass(pw):
     return await _tg_finish()
 
 
+async def _tg_qr():
+    from telethon import TelegramClient
+    from telethon.sessions import StringSession
+    env = read_env()
+    if TG["client"] is not None:
+        try:
+            await TG["client"].disconnect()
+        except Exception:  # noqa: BLE001
+            pass
+    TG["client"] = TelegramClient(StringSession(), int(env["TG_API_ID"]), env["TG_API_HASH"])
+    await TG["client"].connect()
+    TG["qr"] = await TG["client"].qr_login()
+    return TG["qr"].url
+
+
+async def _tg_qr_wait():
+    from telethon.errors import SessionPasswordNeededError
+    qr = TG.get("qr")
+    if qr is None:
+        return {"state": "none"}
+    try:
+        await qr.wait(timeout=20)
+    except SessionPasswordNeededError:
+        return {"state": "password"}
+    except asyncio.TimeoutError:
+        await qr.recreate()
+        return {"state": "wait", "url": qr.url}
+    TG["qr"] = None
+    r = await _tg_finish()
+    return {"state": "ok", "who": r[3:]}
+
+
 async def _tg_finish():
     me = await TG["client"].get_me()
     set_env({"TG_SESSION": TG["client"].session.save()})
@@ -234,12 +266,14 @@ def render(msg: str = "", tg_step: str = "") -> bytes:
     elif tg_step == "code":
         out.append(f"<form method=post action='{p}/code'><label>Код из Telegram<small>пришёл в приложение Telegram на номер {html.escape(TG['phone'])}</small>"
                    f"<input name=code autocomplete=off inputmode=numeric></label><button>Войти</button></form>")
+        out.append(f"<form method=post action='{p}/qr'><button style='background:#188038'>Войти по QR-коду (без кода из SMS)</button></form>")
     elif tg_step == "password":
         out.append(f"<form method=post action='{p}/pass'><label>Облачный пароль Telegram<small>у аккаунта включена двухэтапная проверка</small>"
                    f"<input name=pw type=password autocomplete=off></label><button>Войти</button></form>")
     else:
         out.append(f"<form method=post action='{p}/phone'><label>Номер телефона аккаунта разведки<small>в международном виде, например +66…</small>"
                    f"<input name=phone autocomplete=off></label><button>Прислать код</button></form>")
+        out.append(f"<form method=post action='{p}/qr'><button style='background:#188038'>Войти по QR-коду (без кода из SMS)</button></form>")
 
     out.append("<h2>3. Проверка</h2><table>")
     for name, ok, note in check_all():
@@ -248,6 +282,38 @@ def render(msg: str = "", tg_step: str = "") -> bytes:
     out.append("</table>")
     out.append(f"<form method=post action='{p}/done'><button style='background:#188038'>Готово — выключить эту страницу</button></form>")
     return page("".join(out))
+
+
+def qr_page(url: str) -> bytes:
+    p = f"/{KEY}"
+    body = f"""<h1>Вход в Telegram по QR-коду</h1>
+<ol><li>На телефоне в Telegram переключитесь на аккаунт разведки (@savely_karelin).</li>
+<li>Настройки → Устройства → <b>Подключить устройство</b> (Link Desktop Device).</li>
+<li>Наведите камеру на код ниже. Код обновляется сам — просто держите камеру.</li></ol>
+<div id=q style='margin:24px 0'></div><p id=s class=skip>Жду сканирования…</p>
+<p><a href='{p}'>← назад к настройке</a></p>
+<script src='https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js'></script>
+<script>
+let qr=new QRCode(document.getElementById('q'),{{text:{json_str(url)},width:260,height:260}});
+async function poll(){{
+  try{{
+    const d=await fetch('{p}/qrwait').then(r=>r.json());
+    const s=document.getElementById('s');
+    if(d.state==='ok'){{s.className='ok';s.textContent='✓ Вход выполнен: '+d.who+'. Возвращаю на страницу настройки…';setTimeout(()=>location.href='{p}',2000);return;}}
+    if(d.state==='password'){{s.innerHTML="У аккаунта включён облачный пароль — <a href='{p}/pw'>введите его здесь</a>.";return;}}
+    if(d.state==='wait'&&d.url){{qr.clear();qr.makeCode(d.url);}}
+    if(d.state==='error'){{s.className='bad';s.textContent='Ошибка: '+d.error;return;}}
+  }}catch(e){{}}
+  setTimeout(poll,500);
+}}
+poll();
+</script>"""
+    return page(body)
+
+
+def json_str(x: str) -> str:
+    import json
+    return json.dumps(x)
 
 
 class H(BaseHTTPRequestHandler):
@@ -267,6 +333,21 @@ class H(BaseHTTPRequestHandler):
         return {k: v[0].strip() for k, v in data.items()}
 
     def do_GET(self):
+        if self.path == f"/{KEY}/qrwait":
+            import json
+            try:
+                data = tg_run(_tg_qr_wait())
+            except Exception as e:  # noqa: BLE001
+                data = {"state": "error", "error": f"{type(e).__name__}: {e}"}
+            body = json.dumps(data).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if self.path == f"/{KEY}/pw":
+            return self._send(render("", "password"))
         if self.path.rstrip("/") != f"/{KEY}":
             return self._send(b"not found", 404)
         self._send(render())
@@ -302,6 +383,9 @@ class H(BaseHTTPRequestHandler):
             elif act == "pass":
                 r = tg_run(_tg_pass(f.get("pw", "")))
                 msg = f"✓ Вход выполнен: {r[3:]}"
+            elif act == "qr":
+                url = tg_run(_tg_qr())
+                return self._send(qr_page(url))
             elif act == "done":
                 DONE.set()
                 return self._send(page("<h1>Готово</h1><p>Страница выключена. Вкладку можно закрыть.</p>"))
