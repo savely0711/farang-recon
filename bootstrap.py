@@ -23,8 +23,19 @@ def run(cmd):
 
 
 def main():
-    run([sys.executable, "-m", "pip", "install", "-q", "-r", "requirements.txt",
-         "--break-system-packages"])
+    pip = [sys.executable, "-m", "pip", "install", "-q", "-r", "requirements.txt",
+           "--break-system-packages"]
+    if run(pip) != 0:
+        # Ubuntu 26.04: typing_extensions стоит от системы без RECORD-файла,
+        # pip не может его «обновить» и роняет всю установку. Ставим поверх.
+        print("повтор с --ignore-installed …", flush=True)
+        run(pip + ["--ignore-installed"])
+    check = subprocess.run([sys.executable, "-c", "import telethon, httpx, dotenv, anthropic, PIL"],
+                           cwd=BASE)
+    if check.returncode != 0:
+        print("\n⛔ Библиотеки не встали — дальше не иду. Скажите Клоду.")
+        sys.exit(1)
+    print("✓ библиотеки на месте", flush=True)
     if not os.path.isdir(os.path.join(BASE, ".git")):
         run(["git", "init", "-q"])
         run(["git", "remote", "add", "origin", REPO])
