@@ -258,6 +258,10 @@ def render(msg: str = "", tg_step: str = "") -> bytes:
                    f"<input name={k} type={typ} autocomplete=off></label>")
     out.append("<button>Сохранить и проверить</button></form>")
 
+    out.append("<h2>1б. Токен сайта</h2>")
+    out.append("<small>Старое значение в Vercel скрыто навсегда, поэтому делаем новое: кнопка создаст токен и сразу запишет его на сервер. "
+               "Потом этот же токен надо вставить в Vercel (RECON_API_TOKEN → Edit).</small>")
+    out.append(f"<form method=post action='{p}/gentoken'><button>Создать новый токен сайта</button></form>")
     out.append("<h2>2. Вход в Telegram (аккаунт разведки)</h2>")
     if env.get("TG_SESSION") and not tg_step:
         out.append("<p class=ok>✓ вход выполнен. Повторять не нужно.</p>")
@@ -383,6 +387,17 @@ class H(BaseHTTPRequestHandler):
             elif act == "pass":
                 r = tg_run(_tg_pass(f.get("pw", "")))
                 msg = f"✓ Вход выполнен: {r[3:]}"
+            elif act == "gentoken":
+                tok = secrets.token_hex(24)
+                set_env({"RECON_API_TOKEN": tok, "SITE_API_URL": "https://farang.market/api/recon",
+                         "PREPARE_LIMIT": "30", "PREPARE_MAX_AGE_DAYS": "30", "PREPARE_MAX_PHOTOS": "6"})
+                return self._send(page(f"""<h1>Новый токен сайта</h1>
+<p>Токен уже записан на сервер. Осталось вставить его в Vercel.</p>
+<input id=t value='{tok}' readonly style='font-family:monospace'>
+<button id=b onclick="navigator.clipboard.writeText(document.getElementById('t').value).then(()=>{{this.textContent='✓ Скопировано'}})">Скопировать</button>
+<ol><li>Нажмите «Скопировать».</li><li>Во вкладке Vercel у строки RECON_API_TOKEN: ⋯ → Edit → вставьте в поле Value → Save.</li>
+<li>Напишите Клоду «вставил» — он сам перезапустит сайт и проверит связь.</li></ol>
+<p><a href='/{KEY}'>← назад к настройке</a></p>"""))
             elif act == "qr":
                 url = tg_run(_tg_qr())
                 return self._send(qr_page(url))
