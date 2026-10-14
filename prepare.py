@@ -51,7 +51,8 @@ import sys
 
 import httpx
 from dotenv import load_dotenv
-from telethon import TelegramClient
+from telethon import TelegramClient  # noqa: F401
+from tgclient import tg_client
 from telethon.errors import FloodWaitError
 from telethon.sessions import StringSession
 
@@ -314,9 +315,7 @@ async def main() -> int:
     api_hash = os.environ["TG_API_HASH"]
     session = StringSession(os.environ["TG_SESSION"])
 
-    async with TelegramClient(session, api_id, api_hash,
-                              use_ipv6=os.environ.get("TG_IPV6") == "1",
-                              connection_retries=3, retry_delay=2, timeout=15) as client:
+    async with tg_client(session, api_id, api_hash) as client:
         me = await client.get_me()
         print(f"🔑 вошёл как {me.first_name} (id {me.id})")
         for i, row in enumerate(rows):
