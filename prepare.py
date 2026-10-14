@@ -130,7 +130,7 @@ async def _collect_photos(client, entity, msg) -> list[dict]:
         if not getattr(m, "photo", None):
             continue
         try:
-            raw = await client.download_media(m, file=bytes)
+            raw = await asyncio.wait_for(client.download_media(m, file=bytes), timeout=60)
         except Exception as e:  # noqa: BLE001
             print(f"    ⚠ снимок не скачался: {e}")
             continue
@@ -314,7 +314,9 @@ async def main() -> int:
     api_hash = os.environ["TG_API_HASH"]
     session = StringSession(os.environ["TG_SESSION"])
 
-    async with TelegramClient(session, api_id, api_hash) as client:
+    async with TelegramClient(session, api_id, api_hash,
+                              use_ipv6=os.environ.get("TG_IPV6") == "1",
+                              connection_retries=3, retry_delay=2, timeout=15) as client:
         me = await client.get_me()
         print(f"🔑 вошёл как {me.first_name} (id {me.id})")
         for i, row in enumerate(rows):

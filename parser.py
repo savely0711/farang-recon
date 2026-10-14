@@ -85,6 +85,17 @@ async def ensure_member(client, entity) -> bool:
         return False
 
 
+_PHOTO_FAILS = [0]
+
+
+def tg_client(session, api_id, api_hash):
+    """TelegramClient с настройками сервера: TG_IPV6=1 — ходить в Telegram по
+    IPv6 (на Aeza Стокгольм DC5 по IPv4 недоступен), короткие повторы."""
+    return TelegramClient(session, api_id, api_hash,
+                          use_ipv6=os.environ.get("TG_IPV6") == "1",
+                          connection_retries=3, retry_delay=2, timeout=15)
+
+
 async def _photo_prints(client, msg) -> list:
     """Отпечатки фотографий поста (обычно один — заглавный снимок).
 
@@ -93,11 +104,19 @@ async def _photo_prints(client, msg) -> list:
     отпечаток от пережатия почти не меняется. Не вышло — не беда: тогда
     объявление сравнится только по тексту.
     """
-    if not getattr(msg, "photo", None):
+    if not getattr(msg, "photo", None) or _PHOTO_FAILS[0] >= 3:
         return []
     try:
-        raw = await client.download_media(msg, file=bytes, thumb=-1)
+        # Защита от зависания (14.10.2026): если дата-центр Telegram с фото
+        # недоступен, Telethon часами пытается подключиться. Ждём не больше
+        # 40 секунд, а после трёх неудач подряд фото в этом прогоне не качаем.
+        raw = await asyncio.wait_for(
+            client.download_media(msg, file=bytes, thumb=-1), timeout=40)
+        _PHOTO_FAILS[0] = 0
     except Exception:  # noqa: BLE001
+        _PHOTO_FAILS[0] += 1
+        if _PHOTO_FAILS[0] == 3:
+            print("⚠ фото не качаются (недоступен дата-центр Telegram) — дальше без отпечатков")
         return []
     if not raw:
         return []
@@ -362,7 +381,7 @@ async def main():
     dedup.load()
     joins_left = [MAX_NEW_JOINS_PER_RUN]
 
-    async with TelegramClient(session, api_id, api_hash) as client:
+    async with tg_client(session, api_id, api_hash) as client:
         me = await client.get_me()
         assert isinstance(me, User), "сессия не залогинена как аккаунт"
         print(f"🔑 вошёл как {me.first_name} (id {me.id})")
