@@ -195,7 +195,7 @@ function get(params) {
   return JSON.parse(r._t);
 }
 const NEW = 'Новые';
-const AGREED = 'Согласен';
+const AGREED = 'Новые'; // 15.10.2026: вкладки «Согласен» больше нет, согласные живут в «Новых»
 const REFUSED = 'Отказ';
 const REGISTERED = 'Зарегистрирован';
 const NONICK = 'Без ника';
@@ -222,7 +222,7 @@ function noteOf(tab, link) {
   return '';
 }
 function findRow(link) {
-  for (const tab of [NEW, AGREED, REFUSED, REGISTERED, NONICK, AG]) {
+  for (const tab of [...new Set([NEW, AGREED, REFUSED, REGISTERED, NONICK, AG])]) {
     const row = dump(tab).find((r) => r[1] === link);
     if (row) return { tab, row };
   }
@@ -303,9 +303,9 @@ res = post({ token: 'T', action: 'presence', author: 'ivan', value: 'согла�
 check('присутствие проставлено всем строкам Ивана', res.found === 4, JSON.stringify(res));
 check('все четыре строки переехали во вкладку «Согласен»',
   dump(AGREED).filter((r) => r[0] === 'ivan').length === 4, JSON.stringify(res));
-check('во «Новых» Ивана больше нет', dump(NEW).every((r) => r[0] !== 'ivan'));
-check('«Написали?» при переезде не потерялось',
-  dump(AGREED).every((r) => r[6] === 'Да' && r[7] === 'согласен'));
+// 15.10.2026: «согласен» больше никуда не возит — строки остаются во «Новых».
+check('«Написали?» при смене статуса не потерялось',
+  dump(AGREED).filter((r) => r[0] === 'ivan').every((r) => r[6] === 'Да' && r[7] === 'согласен'));
 check('чужие строки на месте', tabOf('https://t.me/g/5') === NEW);
 post({ token: 'T', action: 'presence', author: 'oleg', value: 'ерунда' });
 check('мусорное значение присутствия не пишется и не возит', tabOf('https://t.me/g/5') === NEW);
@@ -335,7 +335,9 @@ check('мусорное значение = пусто', row('https://t.me/g/1')[
 console.log('\n8. Очередь авто-подготовки');
 let todo = get({ action: 'todo', token: 'T' }).rows;
 const todoLinks = todo.map((r) => r.link);
-check('в очередь попали только согласившиеся', todo.every((r) => r.nick === 'ivan'), JSON.stringify(todo));
+// 15.10.2026: в очередь идут ВСЕ авторы с ником (кроме «отказ»/«зарегистрирован»).
+check('в очередь попали все авторы с ником', todo.length > 0 && todo.every((r) => !!r.nick) &&
+  todo.some((r) => r.nick !== 'ivan'), JSON.stringify(todo));
 check('строка с примечанием-неудачей в очередь НЕ попала',
   todoLinks.indexOf('https://t.me/g/2') === -1, JSON.stringify(todoLinks));
 check('строка без пометки в очереди есть', todoLinks.indexOf('https://t.me/g/8') !== -1);
@@ -352,7 +354,7 @@ res = post({ token: 'T', action: 'consent', nick: '@Ivan', status: 'зареги
 check('запись в реестре появилась', dumpConsent().length === 1 && dumpConsent()[0][0] === 'ivan', JSON.stringify(dumpConsent()));
 check('дата проставлена', /^\d{4}-\d{2}-\d{2}$/.test(String(dumpConsent()[0][2])));
 check('все строки Ивана уехали в «Зарегистрирован»',
-  dump(REGISTERED).filter((r) => r[0] === 'ivan').length === 5 && dump(AGREED).length === 0,
+  dump(REGISTERED).filter((r) => r[0] === 'ivan').length === 5 && dump(AGREED).filter((r) => r[0] === 'ivan').length === 0,
   JSON.stringify(res));
 check('примечание пережило переезд', noteOf(REGISTERED, 'https://t.me/g/2') === '');
 post({ token: 'T', action: 'site', link: 'https://t.me/g/2', value: '', note: 'нет фотографий' });
@@ -364,7 +366,7 @@ res = post({ token: 'T', action: 'consent', nick: 'ivan', status: 'соглас�
 check('отказ автоматикой не снимается', dumpConsent()[0][1] === 'отказ' && res.kept === true, JSON.stringify(res));
 check('строки остались в «Отказ»', dump(REFUSED).filter((r) => r[0] === 'ivan').length === 5);
 check('отказавшийся в очередь не попадает',
-  get({ action: 'todo', token: 'T' }).rows.length === 0);
+  !get({ action: 'todo', token: 'T' }).rows.some((r) => r.nick === 'ivan'));
 
 console.log('\n10. Ночная сверка: placed / nicks / пакеты');
 let placed = get({ action: 'placed', token: 'T' }).rows;
@@ -400,7 +402,7 @@ post({ token: 'T', action: 'append', rows: [
 ] });
 function rowsOf(nick) {
   const out = [];
-  for (const tab of [NEW, AGREED, REFUSED, REGISTERED, NONICK, AG]) {
+  for (const tab of [...new Set([NEW, AGREED, REFUSED, REGISTERED, NONICK, AG])]) {
     for (const r of dump(tab)) if (r[0] === nick) out.push({ tab, r });
   }
   return out;
@@ -513,8 +515,21 @@ SS.getSheetByName('архив_CRM').setName('CRM');
 const mig2 = vm.runInContext('migrateTabs', ctx)();
 check('второй прогон переносит ноль строк', mig2.moved === 0, JSON.stringify(mig2));
 check('строк по-прежнему шесть',
-  dump(NEW).length + dump(AGREED).length + dump(REFUSED).length +
+  dump(NEW).length + dump(REFUSED).length +
   dump(REGISTERED).length + dump(NONICK).length === 6);
+
+console.log('\n14а. Старая вкладка «Согласен» сливается в «Новые» и исчезает (15.10.2026)');
+{
+  const legacy = SS.insertSheet('Согласен');
+  legacy.appendRow(['Ник', 'Ссылка', 'Канал', 'Категория', 'Дата', 'Описание', 'Написали?', 'Присутствие', 'На сайте']);
+  legacy.appendRow(['vera', 'https://t.me/l/1', 'Барахолка', 'Мебель', '2026-10-10 10:00', 'Кресло', 'Да', 'согласен', '']);
+  const before = dump(NEW).length;
+  get({ action: 'todo', token: 'T' });
+  check('вкладки «Согласен» больше нет', !SS.getSheetByName('Согласен'));
+  check('её строка теперь во «Новых»', dump(NEW).length === before + 1 && tabOf('https://t.me/l/1') === NEW);
+  check('и стоит в очереди на сайт',
+    get({ action: 'todo', token: 'T', limit: '500' }).rows.some((r) => r.link === 'https://t.me/l/1'));
+}
 
 console.log('\n15. Удаление архивных вкладок — только настоящих архивов');
 // Два старых повкладочных архива (формат «Дата | Категория | Цена | Ссылка | …»)

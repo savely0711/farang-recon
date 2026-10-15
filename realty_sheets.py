@@ -100,6 +100,24 @@ class RealtySheet:
         return self._post_retry({"token": self._token, "action": "counter"},
                                 note="пересчёт счётчика")
 
+    def read_todo(self, days: int = 14):
+        """Предложения с ником за последние `days` дней — для авто-подготовки
+        на сайт (режим «всё на сайт», 15.10.2026). None — если не прочиталось."""
+        for attempt in range(MAX_RETRIES):
+            try:
+                r = self._client.post(self._url, json={
+                    "token": self._token, "action": "todo", "days": days})
+                r.raise_for_status()
+                data = r.json()
+                if data.get("ok") and isinstance(data.get("rows"), list):
+                    return data["rows"]
+                print(f"  ⚠ таблица недвижимости не отдала очередь: {data}")
+            except Exception as e:  # noqa: BLE001
+                print(f"  ⚠ очередь недвижимости не прочиталась: {e}")
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(RETRY_BACKOFF[attempt])
+        return None
+
     def ping(self) -> bool:
         return self._post_retry({"token": self._token, "action": "ping"},
                                 note="проверка связи")

@@ -21,6 +21,10 @@
  *        seller,agency,project,parsed_by,snippet}]}
  *   {token, action:'counter'} — пересчитать вкладку «Счётчик»
  *   {token, action:'ping'}    — проверка связи
+ *   {token, action:'todo', days:14} — предложения с ником за последние N дней
+ *        для авто-подготовки на сайт (15.10.2026, режим «всё на сайт»):
+ *        [{nick, link, time}]. Что уже выложено, помнит сервер разведки сам
+ *        (realty_done.json) — колонок в этой таблице не добавляем.
  *
  * Как поставить:
  *   1. Новая Google-таблица → «Расширения» → «Apps Script» → вставить этот код.
@@ -80,6 +84,9 @@ function doPost(e) {
     if (action === 'counter') {
       return _json({ ok: true, nicks: rebuildCounter() });
     }
+    if (action === 'todo') {
+      return _json({ ok: true, rows: _readTodo(tabs.list, Number(body.days) || 14) });
+    }
 
     var rows = body.rows;
     if (!rows) {
@@ -90,6 +97,33 @@ function doPost(e) {
   } catch (err) {
     return _json({ ok: false, error: String(err) });
   }
+}
+
+/** Предложения (не спрос) с открытым ником за последние `days` дней. */
+function _readTodo(sheet, days) {
+  var last = sheet.getLastRow();
+  if (last < 2) return [];
+  var minTime = new Date().getTime() - days * 24 * 60 * 60 * 1000;
+  var vals = sheet.getRange(2, 1, last - 1, KIND_COL).getValues();
+  var out = [];
+  for (var i = 0; i < vals.length; i++) {
+    var nick = String(vals[i][NICK_COL - 1] || '').replace(/^@/, '').trim().toLowerCase();
+    if (!nick || nick === NO_NICK) continue;
+    if (String(vals[i][KIND_COL - 1] || '').trim() !== KIND_OFFER) continue;
+    var link = String(vals[i][LINK_COL - 1] || '').trim();
+    if (!link) continue;
+    var when = vals[i][DATE_COL - 1];
+    var time = 0;
+    if (when instanceof Date) time = when.getTime();
+    else if (when) {
+      var parsed = new Date(String(when).replace(' ', 'T'));
+      if (!isNaN(parsed.getTime())) time = parsed.getTime();
+    }
+    if (!time || time < minTime) continue;
+    out.push({ nick: nick, link: link, time: time });
+  }
+  out.sort(function (a, b) { return b.time - a.time; });
+  return out;
 }
 
 function doGet() {

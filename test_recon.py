@@ -329,6 +329,9 @@ fake_ai('{"ok": true, "title": "Стул", "description": "", "price_thb": null,
         ' "is_free": false, "is_negotiable": false, "category": "furniture"}')
 check("послабление по цене НЕ распространилось на вещи",
       not build.build_listing("Продам стул")["ok"])
+nop = build.build_listing("Продам стул", allow_no_price=True)
+check("режим «всё на сайт»: вещь без цены собирается, цена пустая",
+      nop["ok"] and nop["price_thb"] is None and not nop["is_negotiable"])
 
 # Примеры к подкатегориям приходят с сайта (поле hint) и попадают в подсказку.
 SCHEMA_SERV = {"subcategories": [

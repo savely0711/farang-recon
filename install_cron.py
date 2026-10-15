@@ -1,66 +1,66 @@
-"""Ставит расписание cron на сервере разведки. Идемпотентно: если строка со
-скриптом уже есть — не дублирует. Запуск: python3 install_cron.py
+"""Ставит расписание cron на сервере разведки. Запуск: python3 install_cron.py
 
-Что и когда:
-  08:30  realty_parser.py — обход групп НЕДВИЖИМОСТИ в отдельную таблицу
-                        (без рассылки и без публикации на сайт)
-  09:00  parser.py    — ночной обход групп: новые объявления в таблицу
-  10:00  prepare.py   — авто-подготовка объявлений «согласных» в очередь модерации
-  10:40  fillhash.py  — добор отпечатков картинок для поиска дублей (db/33)
-  11:20  syncsite.py  — сверка таблицы с сайтом: что стало с объявлениями и
-                        кто из авторов зарегистрировался сам
-  03:00  backupdb.py  — резервная копия базы (переехала сюда из GitHub
-                        09.09.2026: бесплатное хранилище Actions кончилось и
-                        сбрасывается только 1 октября)
-  03:30  backup_photos.py — резервное зеркало фотографий сайта: докачивает
-                        только новые снимки в ~/backup/photos (08.09.2026;
-                        раньше это делал робот GitHub и качал ВСЮ библиотеку
-                        каждую ночь, съедая бесплатный трафик Supabase)
-Рассылки «первое касание» здесь БОЛЬШЕ НЕТ: 01.09.2026 Савелий остановил её
-насовсем (неудобно работать с автосообщениями). Строку из расписания убирает
-outreach_off.py, возвращает — outreach_on.py. Сюда её не добавляем, иначе
-любой перезапуск расписания включал бы рассылку обратно.
+С 15.10.2026 (режим «всё на сайт», решение Савелия): новое подтягиваем
+ТРИ РАЗА В ДЕНЬ. Время ниже — по БАНГКОКУ; скрипт сам пересчитывает его в
+часовой пояс сервера (новый Aeza живёт по UTC), так что менять ничего не надо.
 
-Порядок важен: prepare.py работает по свежей таблице, fillhash.py — по уже
-загруженным на сайт снимкам, а syncsite.py подводит итог дня."""
+  08:30 / 13:30 / 18:30  realty_parser.py — группы недвижимости → своя таблица
+  09:00 / 14:00 / 19:00  parser.py        — барахолки → таблица разведки
+  10:00 / 15:00 / 20:00  prepare.py       — всё новое → на сайт (чистое сразу
+                                            в ленту, сомнительное в ручную очередь)
+  21:00                  fillhash.py      — добор отпечатков картинок (db/33)
+  21:30                  syncsite.py      — сверка таблицы с сайтом
+  03:00                  backupdb.py      — резервная копия базы
+  03:30                  backup_photos.py — зеркало фотографий
+
+Строки этих скриптов скрипт ЗАМЕНЯЕТ (старые удаляет), остальные не трогает.
+Рассылки «первое касание» здесь НЕТ (остановлена 01.09.2026); её строку
+выключает outreach_off.py, включает outreach_on.py — сюда не добавляем.
+"""
 import re
 import subprocess
+import time
 
 BASE = "/root/recon"
-NEEDED = [
-    f"30 8 * * * cd {BASE} && /usr/bin/python3 realty_parser.py >> realty.log 2>&1",
-    f"0 9 * * * cd {BASE} && /usr/bin/python3 parser.py >> recon.log 2>&1",
-    f"0 10 * * * cd {BASE} && /usr/bin/python3 prepare.py >> prepare.log 2>&1",
-    f"40 10 * * * cd {BASE} && /usr/bin/python3 fillhash.py >> fillhash.log 2>&1",
-    f"20 11 * * * cd {BASE} && /usr/bin/python3 syncsite.py >> syncsite.log 2>&1",
-    f"0 3 * * * cd {BASE} && /usr/bin/python3 -u backupdb.py >> backupdb.log 2>&1",
-    f"30 3 * * * cd {BASE} && /usr/bin/python3 -u backup_photos.py >> backup.log 2>&1",
+BKK = 7 * 3600  # Бангкок = UTC+7
+
+# (часы по Бангкоку, минута, команда)
+PLAN = [
+    ([8, 13, 18], 30, "/usr/bin/python3 realty_parser.py >> realty.log 2>&1"),
+    ([9, 14, 19], 0, "/usr/bin/python3 parser.py >> recon.log 2>&1"),
+    ([10, 15, 20], 0, "/usr/bin/python3 prepare.py >> prepare.log 2>&1"),
+    ([21], 0, "/usr/bin/python3 fillhash.py >> fillhash.log 2>&1"),
+    ([21], 30, "/usr/bin/python3 syncsite.py >> syncsite.log 2>&1"),
+    ([3], 0, "/usr/bin/python3 -u backupdb.py >> backupdb.log 2>&1"),
+    ([3], 30, "/usr/bin/python3 -u backup_photos.py >> backup.log 2>&1"),
 ]
+
+# Смещение сервера от UTC в секундах (летнее время тоже учтено).
+local_off = -(time.altzone if time.localtime().tm_isdst > 0 else time.timezone)
+shift_h = (local_off - BKK) // 3600
+
+NEEDED = []
+for hours, minute, cmd in PLAN:
+    hs = sorted(((h + shift_h) % 24) for h in hours)
+    NEEDED.append(f"{minute} {','.join(map(str, hs))} * * * cd {BASE} && {cmd}")
 
 cur = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
 existing = cur.stdout if cur.returncode == 0 else ""
 lines = [l for l in existing.splitlines() if l.strip()]
 
-added = 0
-for ln in NEEDED:
-    # Имя скрипта берём прямо из строки — раньше здесь был список имён, и
-    # каждый новый скрипт приходилось в него дописывать. 09.09.2026 про это
-    # забыли, и setcron.py упал с StopIteration.
-    #
-    # ВНИМАНИЕ: «parser.py» — часть строки «realty_parser.py», поэтому имя
-    # ищем целиком и сравниваем с пробелом впереди. Иначе строка про
-    # недвижимость считалась бы уже существующей и не добавлялась бы никогда.
-    found = re.search(r"(\S+\.py)", ln)
-    if not found:
-        continue
-    marker = found.group(1)
-    if any((" " + marker) in e for e in lines):
-        continue
-    lines.append(ln)
-    added += 1
 
-new = "\n".join(lines) + "\n"
+def marker(line: str):
+    # «parser.py» — часть «realty_parser.py», поэтому имя берём целиком и
+    # сравниваем с пробелом впереди.
+    m = re.search(r" (\S+\.py)", line)
+    return m.group(1) if m else None
+
+
+managed = {marker(n) for n in NEEDED}
+kept = [l for l in lines if marker(l) not in managed]
+new = "\n".join(kept + NEEDED) + "\n"
 subprocess.run(["crontab", "-"], input=new, text=True)
+print(f"часовой пояс сервера: UTC{local_off // 3600:+d}; время в плане — по Бангкоку")
 print("=== Текущий crontab ===")
 print(new)
-print(f"Добавлено новых строк: {added}")
+print(f"строк расписания разведки: {len(NEEDED)} (старые заменены)")

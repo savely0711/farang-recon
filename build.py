@@ -142,7 +142,8 @@ def _get_client() -> Anthropic:
     return _client
 
 
-def build_listing(text: str, schema: dict | None = None) -> dict:
+def build_listing(text: str, schema: dict | None = None,
+                  allow_no_price: bool = False) -> dict:
     """
     Готовит карточку из текста поста.
 
@@ -203,6 +204,10 @@ def build_listing(text: str, schema: dict | None = None) -> dict:
         # Считаем это «цена договорная»: сайт с 07.09 принимает такие услуги.
         if category == "services" and SERVICES_NO_PRICE:
             is_negotiable = True
+        elif allow_no_price:
+            # Режим «всё на сайт» (15.10.2026): пост без цены не выбрасываем —
+            # сайт сам положит его в ручную очередь с пометкой «цена не указана».
+            pass
         else:
             return {**fail, "reason": "цена не разобрана"}
     if price is not None:

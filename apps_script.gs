@@ -88,7 +88,10 @@ var TOKEN = 'PASTE_YOUR_TOKEN_HERE'; // тот же, что в .env (SHEET_TOKEN
 
 // ── вкладки-воронка (строка переезжает при смене «Присутствия») ──
 var TAB_NEW = 'Новые';              // пусто или «нет ответа»
-var TAB_AGREED = 'Согласен';
+// «Согласен» УПРАЗДНЁН 15.10.2026 (решение Савелия 14.10: владельцы групп дали
+// согласие, на сайт идут ВСЕ объявления). Имя осталось только для того, чтобы
+// разово перелить строки старой вкладки в «Новые» и удалить её.
+var TAB_AGREED_LEGACY = 'Согласен';
 var TAB_REFUSED = 'Отказ';
 var TAB_REGISTERED = 'Зарегистрирован';
 // ── вкладки без переездов ──
@@ -127,12 +130,12 @@ var PRESENCES = [PR_NO_ANSWER, PR_AGREED, PR_REGISTERED, PR_REFUSED];
 var TAB_BY_PRESENCE = {};
 TAB_BY_PRESENCE[''] = TAB_NEW;
 TAB_BY_PRESENCE[PR_NO_ANSWER] = TAB_NEW;
-TAB_BY_PRESENCE[PR_AGREED] = TAB_AGREED;
+TAB_BY_PRESENCE[PR_AGREED] = TAB_NEW;  // «согласен» больше ничего не значит
 TAB_BY_PRESENCE[PR_REFUSED] = TAB_REFUSED;
 TAB_BY_PRESENCE[PR_REGISTERED] = TAB_REGISTERED;
 
 // Вкладки воронки — по ним строки ездят. Порядок = порядок в таблице.
-var FUNNEL_TABS = [TAB_NEW, TAB_AGREED, TAB_REFUSED, TAB_REGISTERED];
+var FUNNEL_TABS = [TAB_NEW, TAB_REFUSED, TAB_REGISTERED];
 // Вкладки, где строка живёт всегда (переезд их не касается).
 var FIXED_TABS = [TAB_NONICK, AGENCY_TAB];
 // Все вкладки с объявлениями (порядок важен: так они создаются в таблице).
@@ -431,19 +434,22 @@ function _siteCell(value, note) {
   var v = _safeSite(value);
   var n = String(note == null ? '' : note).trim();
   if (!v) return { value: '', note: n };
-  return { value: v, note: '' }; // получилось — старую причину убираем
+  // Ждёт человека — причину оставляем (почему не опубликовалось само, 15.10).
+  return { value: v, note: v === SITE_REVIEW ? n : '' };
 }
 
 /**
  * Очередь авто-подготовки: объявления продавцов, давших согласие, которые мы
  * ещё не пробовали выложить на сайт.
  *
- * Условия строки: есть ник, «Присутствие» = «согласен», «На сайте» пусто И БЕЗ
+ * Условия строки (с 15.10.2026): есть ник, автор НЕ в «отказ» и НЕ
+ * «зарегистрирован» (ни в строке, ни в реестре), «На сайте» пусто И БЕЗ
  * ПРИМЕЧАНИЯ (примечание = прошлая попытка провалилась, второй раз не берём).
  * Сортировка — от свежих к старым. `days` > 0 отсекает посты старше N дней.
  */
 function _readTodo(tabs, limit, days) {
   var out = [];
+  var consents = _readConsents(tabs.consent);
   var minTime = 0;
   if (days > 0) minTime = new Date().getTime() - days * 24 * 60 * 60 * 1000;
 
@@ -457,7 +463,12 @@ function _readTodo(tabs, limit, days) {
       var row = vals[i];
       var nick = _normNick(row[NICK_COL - 1]);
       if (!nick) continue;
-      if (_safePresence(row[PRESENCE_COL - 1]) !== PR_AGREED) continue;
+      // С 15.10.2026 берём ВСЕХ, кроме чёрного списка («отказ») и тех, кто
+      // публикует сам («зарегистрирован»): и по ячейке строки, и по реестру.
+      var pres = _safePresence(row[PRESENCE_COL - 1]);
+      if (pres === PR_REFUSED || pres === PR_REGISTERED) continue;
+      var reg = consents[nick];
+      if (reg && (reg.status === PR_REFUSED || reg.status === PR_REGISTERED)) continue;
       if (String(row[SITE_COL - 1] || '').trim() !== '') continue;
       if (String(notes[i][0] || '').trim() !== '') continue; // была неудача
       var link = String(row[LINK_COL - 1] || '').trim();
@@ -603,7 +614,42 @@ function _ensureTabs() {
     all.push(sh);
     byName[DATA_TABS[i]] = sh;
   }
+  _absorbLegacyAgreed(byName[TAB_NEW]);
   return { all: all, byName: byName, consent: _ensureConsentSheet() };
+}
+
+/**
+ * Разово: строки старой вкладки «Согласен» доливаются в «Новые» (вместе с
+ * примечаниями «На сайте»), вкладка удаляется. Повторный вызов ничего не
+ * делает — вкладки уже нет.
+ */
+function _absorbLegacyAgreed(newSheet) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var old = ss.getSheetByName(TAB_AGREED_LEGACY);
+  if (!old || !newSheet) return 0;
+  var last = old.getLastRow();
+  var moved = 0;
+  if (last >= 2) {
+    var n = last - 1;
+    var vals = old.getRange(2, 1, n, HEADER.length).getValues();
+    var notes = old.getRange(2, SITE_COL, n, 1).getNotes();
+    var keepVals = [];
+    var keepNotes = [];
+    for (var r = 0; r < n; r++) {
+      if (!String(vals[r][LINK_COL - 1] || '').trim() &&
+          !String(vals[r][NICK_COL - 1] || '').trim()) continue;
+      keepVals.push(vals[r]);
+      keepNotes.push([notes[r][0]]);
+    }
+    if (keepVals.length) {
+      var start = newSheet.getLastRow() + 1;
+      newSheet.getRange(start, 1, keepVals.length, HEADER.length).setValues(keepVals);
+      newSheet.getRange(start, SITE_COL, keepNotes.length, 1).setNotes(keepNotes);
+      moved = keepVals.length;
+    }
+  }
+  ss.deleteSheet(old);
+  return moved;
 }
 
 /** Вкладка «Согласия» — реестр. Создаётся при первом обращении: шапка,
